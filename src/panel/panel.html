@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SunoGen</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>SunoGen</h1>
+      <span id="page-status" class="pill pill-warn">checking page…</span>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>Batch</h2>
+
+        <div class="source-row">
+          <button id="pick-source" type="button" class="btn">Pick source song</button>
+          <div id="source-info" class="source-info muted">No source selected</div>
+        </div>
+
+        <div class="grid">
+          <label>
+            Song name
+            <input id="song-name" type="text" placeholder="happy song" />
+          </label>
+          <label>
+            Date (YY-M)
+            <input id="date" type="text" placeholder="26-9" />
+          </label>
+          <label>
+            Take
+            <input id="take" type="text" placeholder="01" />
+          </label>
+          <label>
+            Rating token
+            <input id="rating" type="text" placeholder="iiiN" />
+          </label>
+        </div>
+
+        <div class="full field">
+          <div class="field-head">
+            <span>Workspace</span>
+            <label class="inline">
+              <input id="auto-workspace" type="checkbox" />
+              auto from date + name
+            </label>
+          </div>
+          <input id="workspace" type="text" placeholder="26-9 happy song" />
+          <div id="dest-info" class="dest-info muted"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Style presets</h2>
+          <button id="add-preset" type="button" class="btn btn-sm">+ Add</button>
+        </div>
+        <div id="preset-list" class="preset-list"></div>
+      </section>
+
+      <section class="card" id="editor-card" hidden>
+        <div class="card-head">
+          <h2 id="editor-title">New preset</h2>
+          <button id="cancel-edit" type="button" class="btn btn-sm btn-ghost">Cancel</button>
+        </div>
+        <label class="full">
+          Name
+          <input id="p-name" type="text" placeholder="Warm acoustic" />
+        </label>
+        <label class="full">
+          Style code (4 letters)
+          <input id="p-code" type="text" maxlength="8" placeholder="qhvy" />
+        </label>
+        <label class="full">
+          Style prompt
+          <textarea id="p-style" rows="3" placeholder="warm acoustic folk, fingerpicked guitar, intimate vocals"></textarea>
+        </label>
+        <label class="full">
+          Model
+          <input id="p-model" type="text" placeholder="(default)" />
+        </label>
+        <label class="full">
+          Workspace override
+          <input id="p-workspace" type="text" placeholder="(use batch workspace)" />
+        </label>
+        <label class="full">
+          Lyrics
+          <input id="p-lyrics" type="text" placeholder="[instrumental]" />
+        </label>
+        <button id="save-preset" type="button" class="btn btn-primary">Save preset</button>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Preview</h2>
+          <button id="refresh-preview" type="button" class="btn btn-sm btn-ghost">Refresh</button>
+        </div>
+        <div id="preview" class="preview muted">Select presets and fill the batch fields.</div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Run</h2>
+          <label class="inline"><input id="dry-run" type="checkbox" /> dry run</label>
+        </div>
+        <div class="actions">
+          <button id="run-batch" type="button" class="btn btn-primary">Generate batch</button>
+        </div>
+        <details class="tools">
+          <summary>Tools</summary>
+          <div class="tools-actions">
+            <button id="copy-log" type="button" class="btn btn-sm">Copy log</button>
+            <button id="copy-diag" type="button" class="btn btn-sm">Copy diagnostics</button>
+            <button id="diagnose" type="button" class="btn btn-sm">Diagnose</button>
+            <button id="record-flow" type="button" class="btn btn-sm">Record flow</button>
+            <button id="reload-ext" type="button" class="btn btn-sm">Reload extension</button>
+          </div>
+          <div class="muted tools-hint">
+            Diagnose dumps the live selector map; Record flow traces your clicks so menus can be mapped.
+            Copy log includes the latest diagnostics.
+          </div>
+        </details>
+        <pre id="log" class="log"></pre>
+      </section>
+    </main>
+
+    <script src="../shared/title.js"></script>
+    <script src="../content/cover-flow.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "suno-gen",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Chrome extension to batch-generate Suno covers from saved style presets.",
+  "scripts": {
+    "chrome": "node tools/launch.js",
+    "inspect": "node tools/inspect.js",
+    "cover": "node tools/cover-form.js"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

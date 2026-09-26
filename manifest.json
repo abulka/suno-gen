@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "SunoGen",
+  "version": "0.1.0",
+  "description": "Batch-generate Suno covers from saved style presets, with naming and workspace conventions.",
+  "minimum_chrome_version": "114",
+  "permissions": ["sidePanel", "storage", "scripting", "tabs"],
+  "host_permissions": ["https://suno.com/*", "https://*.suno.com/*"],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "action": {
+    "default_title": "SunoGen"
+  },
+  "side_panel": {
+    "default_path": "src/panel/panel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://suno.com/*", "https://*.suno.com/*"],
+      "js": [
+        "src/shared/title.js",
+        "src/content/selectors.js",
+        "src/content/cover-flow.js",
+        "src/content/content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://suno.com/*", "https://*.suno.com/*"],
+      "js": ["src/inject/page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

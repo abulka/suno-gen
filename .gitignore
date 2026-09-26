@@ -1,0 +1,4 @@
+node_modules/
+package-lock.json
+tools/.chrome-profile/
+tools/out/
