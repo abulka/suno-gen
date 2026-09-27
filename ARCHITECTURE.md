@@ -99,7 +99,15 @@ functions in `selectors.js` rather than fragile CSS.
 ## Title / workspace logic (`src/shared/title.js`)
 
 - `buildTitle({date,take,rating,styleCode,songName})`
-  → `"26-9 01-iiiN qhvy - happy song"`.
+  → `"26-9 01-iiiN qhvy - happy song"`. `take`/`rating` are optional: the
+  `{take}-{rating}` segment collapses to whichever is present (`06`, `iiiN`) and
+  vanishes when both are empty.
+- `offsetTake(take, n)` — base + step (`06` + 2 → `08`); `""` when no take.
+  `buildJobs` uses step **2 per style** (Suno always makes 2 clips per Create, so
+  the 2nd is left for manual editing).
+- `deriveSongName(title)` — from a picked clip's aria-label: drop `· <uuid>`,
+  strip a leading `YYYY-MM-DD`/`YY-M` date, take the last ` - ` segment, else
+  strip a leading `take-rating` token. `"2026-07-28 arlie · <uuid>"` → `"arlie"`.
 - `buildWorkspace({date,songName})` → `"26-9 happy song"`.
 - `resolveWorkspace(batch, preset)`: **preset override → `batch.workspace` →
   derived**. (Regression: an earlier version skipped `batch.workspace` and always
@@ -139,7 +147,9 @@ Per job (`runBatch` → `ensureCoverContext` → fill → create):
    throw (stop before spending credits) if it didn't change.
 10. `clickCreate()` → `button[aria-label="Create song"]`.
 11. After all jobs, `monitorJobs()` polls `.clip-row[data-clip-status]` for the job
-    titles and emits `queued → streaming → complete`.
+    titles and emits `queued → streaming → complete`. The panel's `logStatus()`
+    dedupes these against the MAIN-world network hook (same titles/statuses) and
+    filters to the current batch, so each transition logs once.
 
 ## Confirmed Suno DOM reference (Sep 2026)
 

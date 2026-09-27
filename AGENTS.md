@@ -115,14 +115,23 @@ node tools/test-flow.js ... --batch=yes    # runs a 2-preset batch via runBatch
 ## Conventions baked into the code
 
 - **Title template:** `{date} {take}-{rating} {styleCode} - {songName}`
-  - `date` = `YY-M` (e.g. `26-9`), `take` = 2-digit shared across styles
+  - `date` = `YY-M` (e.g. `26-9`), `take` = 2-digit base per song idea
+  - `take` steps by **2 per style** (06, 08, 10…) because Suno makes 2 clips per
+    Create; the 2nd of each pair is left for manual editing
+  - `take`/`rating` are optional: the segment collapses to whichever exists and
+    is omitted when both are empty (`offsetTake` keeps the step)
   - `rating` default literal `iiiN` (searchable prefix + placeholder edited later)
   - `styleCode` = no spaces, ≤ 8 chars (`70s jam` → `70sjam`)
   - Example: `26-9 01-iiiN qhvy - happy song`
+- **Picking a source** auto-fills Song name via `title.js:deriveSongName`
+  (`2026-07-28 arlie · <uuid>` → `arlie`); always overwrites the field.
 - **Workspace:** default `{date} {songName}` (e.g. `26-9 bird song`); per-preset
   override wins; missing workspaces are auto-created (user preference).
 - **Resolution order** (`title.js:resolveWorkspace`): preset override → batch
   workspace → derived from date+name.
+- **Status logging** (panel): `logStatus()` dedupes by title+status and filters
+  to the current batch's titles. Two channels report statuses (the `.clip-row`
+  poll and the MAIN-world network hook); without this they double-log.
 
 ## File map
 

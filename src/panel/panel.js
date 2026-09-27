@@ -14,6 +14,9 @@
   let editingId = null;
   let recording = false;
   let diagnosticsBlob = "";
+  let batchRunning = false;
+  let activeJobTitles = new Set();
+  let lastStatusByTitle = new Map();
 
   // ---------- storage ----------
 
@@ -406,6 +409,21 @@
     log.scrollTop = log.scrollHeight;
   }
 
+  /**
+   * Log a generation status once. Two channels report statuses (the polled
+   * `.clip-row[data-clip-status]` monitor and the MAIN-world network hook), so
+   * filter to the current batch's job titles and dedupe by title+status.
+   */
+  function logStatus(title, status, opts) {
+    const key = String(title || "").trim();
+    if (!key || !status) return;
+    if (opts && opts.fromPage && !batchRunning) return;
+    if (activeJobTitles.size && !activeJobTitles.has(key)) return;
+    if (lastStatusByTitle.get(key) === status) return;
+    lastStatusByTitle.set(key, status);
+    logLine("  " + key + " → " + status, status === "complete" ? "ok" : undefined);
+  }
+
   async function copyText(text) {
     try {
       await navigator.clipboard.writeText(text);
@@ -541,6 +559,7 @@
       const config = currentConfig();
       config.dryRun = $("dry-run").checked;
       logLine("Starting batch (" + (config.dryRun ? "dry run" : "live") + ")…");
+      batchRunning = !config.dryRun;
       try {
         const res = await sendToContent("SUNOGEN_RUN_BATCH", { config: config });
         if (config.dryRun && res.results) {
@@ -549,6 +568,8 @@
         logLine("Batch call returned.");
       } catch (err) {
         logLine(String(err.message || err), "err");
+      } finally {
+        batchRunning = false;
       }
     });
   }
@@ -557,10 +578,15 @@
     if (!msg || msg.type !== "SUNOGEN_EVENT") return;
     if (msg.event === "source-picked") {
       state.source = msg.source;
-      renderSource();
+      const derived = T.deriveSongName(msg.source.title);
+      if (derived) $("song-name").value = derived;
+      syncWorkspace();
       saveBatch();
+      renderSource();
+      renderPreview();
       updateRunEnabled();
       logLine("Source set: " + (msg.source.title || msg.source.clipId), "ok");
+      if (derived) logLine("  song name → " + derived);
     } else if (msg.event === "pick-armed") {
       // already announced by the button handler
     } else if (msg.event === "pick-cancelled") {
@@ -568,6 +594,11 @@
     } else if (msg.event === "pick-miss") {
       logLine(msg.message || "No song card detected.", "err");
     } else if (msg.event === "job-start") {
+      if (msg.index === 0) {
+        activeJobTitles = new Set();
+        lastStatusByTitle = new Map();
+      }
+      activeJobTitles.add(msg.job.title);
       logLine("[" + (msg.index + 1) + "/" + msg.total + "] " + msg.job.title + "  → " + msg.job.workspace);
     } else if (msg.event === "job-submitted") {
       logLine("  submitted → " + msg.job.workspace, "ok");
@@ -578,7 +609,7 @@
     } else if (msg.event === "monitor-start") {
       logLine("Waiting for " + msg.count + " generation(s)…");
     } else if (msg.event === "job-status") {
-      logLine("  " + msg.title + " → " + msg.status, msg.status === "complete" ? "ok" : undefined);
+      logStatus(msg.title, msg.status);
     } else if (msg.event === "batch-complete") {
       logLine("Batch complete.");
     } else if (msg.event === "page") {
@@ -589,16 +620,11 @@
   function renderPageEvent(payload) {
     if (!payload) return;
     if (payload.event === "hook-ready") {
-      logLine("Page hook ready.");
       return;
     }
     if (payload.clips && payload.clips.length) {
       payload.clips.forEach((c) => {
-        const label = c.title || c.id || "clip";
-        logLine(
-          "  " + label + " → " + (c.status || "?"),
-          c.status === "complete" ? "ok" : undefined
-        );
+        logStatus(c.title || c.id || "clip", c.status, { fromPage: true });
       });
     }
   }

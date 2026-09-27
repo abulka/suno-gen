@@ -4,9 +4,16 @@
  * Title template:   {date} {take}-{rating} {styleCode} - {songName}
  * Example:          "26-9 01-iiiN qhvy - happy song"
  *
+ * `take` and `rating` are optional: the "{take}-{rating}" segment collapses to
+ * whichever is present (and disappears entirely when both are empty).
+ *
+ * `take` is the BASE for the first style; each subsequent style steps it by 2
+ * (Suno always generates 2 clips per Create, so the 2nd is reserved for manual
+ * editing): 06, 08, 10, …
+ *
  * Usage:
  *   date     -> "26-9"  (year last-2 + "-" + month, no zero padding on month)
- *   take     -> "01"    (2-digit, shared across all styles of one song idea)
+ *   take     -> "01"    (2-digit base, shared across all styles of one song idea)
  *   rating   -> "iiiN"  (literal; "iii" is the searchable prefix, N is edited later 1..5)
  *   styleCode-> "qhvy"  (per preset)
  *   songName -> "happy song"
@@ -27,20 +34,53 @@
     return yy + "-" + m;
   }
 
+  /** "" when empty (take is optional), else 2-digit. */
   function normalizeTake(take) {
-    if (take === undefined || take === null || take === "") return "01";
-    const n = parseInt(String(take).replace(/[^0-9]/g, ""), 10);
-    if (isNaN(n)) return "01";
+    if (take === undefined || take === null) return "";
+    const s = String(take).trim();
+    if (!s) return "";
+    const n = parseInt(s.replace(/[^0-9]/g, ""), 10);
+    if (isNaN(n)) return "";
     return pad2(n);
+  }
+
+  /** Base take + offset (e.g. 06 -> 08), or "" when there is no take. */
+  function offsetTake(take, offset) {
+    const base = normalizeTake(take);
+    if (!base) return "";
+    return pad2(parseInt(base, 10) + (Number(offset) || 0));
   }
 
   function buildTitle(cfg) {
     const date = (cfg.date || "").trim();
     const take = normalizeTake(cfg.take);
-    const rating = (cfg.rating || "iiiN").trim();
+    const rating = (cfg.rating || "").trim();
     const styleCode = (cfg.styleCode || "").trim().replace(/\s+/g, "").slice(0, 8);
     const songName = (cfg.songName || "").trim();
-    return date + " " + take + "-" + rating + " " + styleCode + " - " + songName;
+    const tr = [take, rating].filter(Boolean).join("-");
+    const head = [date, tr, styleCode].filter(Boolean).join(" ");
+    return songName ? head + " - " + songName : head;
+  }
+
+  /**
+   * Derive a song name from a picked source's title.
+   *   "2026-07-28 arlie · bb7c68e4-…"          -> "arlie"
+   *   "2026-08-28 70s nu jam - truck"          -> "truck"
+   *   "2026-08-28 01-iii2 gm art jam - truck (x)"-> "truck (x)"
+   *   "26-9 06-iiiN artjam - truZ"             -> "truZ"
+   */
+  function deriveSongName(rawTitle) {
+    let s = String(rawTitle || "").trim();
+    const dot = s.indexOf("·");
+    if (dot !== -1) s = s.slice(0, dot).trim();
+    s = s.replace(/\s+[0-9a-f]{8}-[0-9a-f-]{8,}$/i, "").trim();
+    s = s.replace(/^\d{4}-\d{1,2}-\d{1,2}\s+/, "");
+    s = s.replace(/^\d{1,2}-\d{1,2}\s+/, "");
+    const parts = s.split(" - ");
+    if (parts.length > 1) return parts[parts.length - 1].trim();
+    s = s.replace(/^\d{1,2}-[A-Za-z0-9]+\s*/, "");
+    s = s.replace(/^\d{1,2}\s+/, "");
+    return s.trim();
   }
 
   function buildWorkspace(cfg) {
@@ -69,6 +109,8 @@
     pad2: pad2,
     todayYYM: todayYYM,
     normalizeTake: normalizeTake,
+    offsetTake: offsetTake,
+    deriveSongName: deriveSongName,
     buildTitle: buildTitle,
     buildWorkspace: buildWorkspace,
     resolveWorkspace: resolveWorkspace

@@ -460,13 +460,15 @@
     const { batch, presets } = config;
     return presets
       .filter((p) => p.selected !== false)
-      .map((preset) => ({
+      .map((preset, i) => ({
         presetId: preset.id,
         presetName: preset.name,
         styleCode: preset.styleCode,
         title: T.buildTitle({
           date: batch.date,
-          take: batch.take,
+          // Suno always makes 2 clips per Create; step the take by 2 per style
+          // so the 2nd of each pair is left for manual editing.
+          take: T.offsetTake(batch.take, i * 2),
           rating: batch.rating,
           styleCode: preset.styleCode,
           songName: batch.songName
