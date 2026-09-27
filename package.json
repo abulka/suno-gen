@@ -1,9 +1,10 @@
 {
-  "name": "suno-gen",
+  "name": "suno-generator",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Chrome extension to batch-generate Suno covers from saved style presets.",
+  "description": "Suno Generator — batch-generate Suno cover songs from saved style presets, with naming and workspace conventions.",
+  "license": "MIT",
   "scripts": {
     "chrome": "node tools/launch.js",
     "inspect": "node tools/inspect.js",

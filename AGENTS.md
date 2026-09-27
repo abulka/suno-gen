@@ -1,4 +1,8 @@
-# AGENTS.md — SunoGen
+# AGENTS.md — Suno Generator
+
+> Product name: **Suno Generator**. `SunoGen` is the internal code namespace
+> (`globalThis.SunoGen*`, `__sunogen*`, `sunogen-*` storage keys / CSS classes /
+> `[SunoGen]` logs) and is left as-is.
 
 Guidance for an AI agent (or human) picking up this project in a future session.
 Read this first, then `ARCHITECTURE.md`.

@@ -1,4 +1,6 @@
-# ARCHITECTURE.md — SunoGen
+# ARCHITECTURE.md — Suno Generator
+
+> Product name: **Suno Generator**; `SunoGen` is the internal code namespace.
 
 Design, data flow, and the hard-won Suno DOM facts. Pair with `AGENTS.md`.
 

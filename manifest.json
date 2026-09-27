@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "SunoGen",
+  "name": "Suno Generator",
   "version": "0.1.0",
   "description": "Batch-generate Suno covers from saved style presets, with naming and workspace conventions.",
   "minimum_chrome_version": "114",
@@ -10,7 +10,7 @@
     "service_worker": "src/background/service-worker.js"
   },
   "action": {
-    "default_title": "SunoGen"
+    "default_title": "Suno Generator"
   },
   "side_panel": {
     "default_path": "src/panel/panel.html"
