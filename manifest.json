@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Batch-generate Suno covers from saved style presets, with naming and workspace conventions.",
   "minimum_chrome_version": "114",
-  "permissions": ["sidePanel", "storage", "scripting", "tabs"],
+  "permissions": ["sidePanel", "storage", "scripting", "tabs", "downloads"],
   "host_permissions": ["https://suno.com/*", "https://*.suno.com/*"],
   "background": {
     "service_worker": "src/background/service-worker.js"
@@ -22,8 +22,10 @@
         "src/shared/title.js",
         "src/content/selectors.js",
         "src/content/cover-flow.js",
-        "src/content/content.js"
+        "src/content/content.js",
+        "src/content/row-indicators.js"
       ],
+      "css": ["src/content/row-indicators.css"],
       "run_at": "document_idle"
     },
     {

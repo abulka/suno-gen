@@ -59,6 +59,180 @@
     await chrome.storage.local.set({ lastBatch: { batch: state.batch, sources: state.sources } });
   }
 
+  async function saveSettings(patch) {
+    state.settings = Object.assign({}, state.settings, patch);
+    await chrome.storage.local.set({ settings: state.settings });
+  }
+
+  // ---------- download folder scan (File System Access) ----------
+
+  const FS_DB = "sunogen-fs";
+  const FS_STORE = "handles";
+
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(FS_DB, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(FS_STORE)) req.result.createObjectStore(FS_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbGet(key) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction(FS_STORE, "readonly").objectStore(FS_STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbSet(key, value) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction(FS_STORE, "readwrite").objectStore(FS_STORE).put(value, key);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  function setFolderStatus(text) {
+    const el = $("dl-folder-status");
+    if (el) el.textContent = text || "";
+  }
+
+  async function walkDir(handle, prefix, depth, onFile, state) {
+    if (depth > 6 || state.files > 4000) return;
+    for await (const entry of handle.values()) {
+      if (state.files > 4000) return;
+      const path = prefix ? prefix + "/" + entry.name : entry.name;
+      if (entry.kind === "directory") {
+        await walkDir(entry, path, depth + 1, onFile, state);
+      } else {
+        state.files++;
+        await onFile(entry, path);
+      }
+    }
+  }
+
+  async function scanDownloadFolder() {
+    const Meta = globalThis.SunoGenAudioMeta;
+    const handle = await idbGet("downloadFolder");
+    if (!handle) {
+      logLine("No download folder connected.", "err");
+      setFolderStatus("not connected");
+      return;
+    }
+    try {
+      let perm = await handle.queryPermission({ mode: "read" });
+      if (perm !== "granted") perm = await handle.requestPermission({ mode: "read" });
+      if (perm !== "granted") {
+        setFolderStatus("permission needed");
+        return;
+      }
+    } catch (err) {
+      setFolderStatus("permission error");
+      return;
+    }
+
+    setFolderStatus("scanning…");
+    const store = await chrome.storage.local.get(["clipTitles", "downloadedClips"]);
+    const known = new Set([
+      ...Object.keys(store.clipTitles || {}),
+      ...Object.keys(store.downloadedClips || {})
+    ]);
+    const found = new Map();
+    let scanned = 0;
+    const state = { files: 0 };
+    const sliceLen = 512 * 1024;
+
+    await walkDir(
+      handle,
+      handle.name,
+      0,
+      async (entry, path) => {
+        if (!Meta.AUDIO_EXT.test(entry.name)) return;
+        try {
+          const file = await entry.getFile();
+          const head = new Uint8Array(await file.slice(0, sliceLen).arrayBuffer());
+          const tailStart = Math.max(0, file.size - sliceLen);
+          const tail = new Uint8Array(await file.slice(tailStart).arrayBuffer());
+          const text = Meta.decode(head) + "\n" + Meta.decode(tail);
+          const id = Meta.idFromText(text, known);
+          scanned++;
+          if (id) {
+            known.add(id);
+            const hit = found.get(id);
+            if (hit) hit.count++;
+            else found.set(id, { path: path, count: 1 });
+          }
+        } catch (err) {
+          /* skip unreadable file */
+        }
+      },
+      state
+    );
+
+    // The folder scan is authoritative for "on disk": drop disk facts whose file
+    // is gone, but leave Chrome-history facts untouched.
+    const after = await chrome.storage.local.get("downloadedClips");
+    const current = after.downloadedClips || {};
+    let changed = false;
+    for (const id of Object.keys(current)) {
+      if (current[id].disk && !found.has(id)) {
+        delete current[id].disk;
+        if (!current[id].history) delete current[id];
+        changed = true;
+      }
+    }
+    for (const [id, hit] of found) {
+      const entry = current[id] || {};
+      const prev = entry.disk;
+      if (!prev || prev.path !== hit.path || prev.count !== hit.count) {
+        entry.disk = { at: Date.now(), path: hit.path, count: hit.count };
+        current[id] = entry;
+        changed = true;
+      }
+    }
+    if (changed) await chrome.storage.local.set({ downloadedClips: current });
+
+    const summary = "scanned " + scanned + ", matched " + found.size;
+    setFolderStatus(summary);
+    logLine("Folder scan: " + summary + " clip(s).", "ok");
+  }
+
+  async function connectDownloadFolder() {
+    if (typeof window.showDirectoryPicker !== "function") {
+      logLine("File System Access API is unavailable here — open the panel as a tab and retry.", "err");
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({ id: "sunogen-downloads", mode: "read" });
+      await idbSet("downloadFolder", handle);
+      $("dl-folder").textContent = "Reconnect download folder";
+      setFolderStatus("connected");
+      await scanDownloadFolder();
+    } catch (err) {
+      if (String((err && err.name) || "") !== "AbortError") {
+        logLine("Folder connect failed: " + err, "err");
+      }
+    }
+  }
+
+  async function refreshFolderStatus() {
+    try {
+      const handle = await idbGet("downloadFolder");
+      if (!handle) return;
+      $("dl-folder").textContent = "Reconnect download folder";
+      const perm = await handle.queryPermission({ mode: "read" });
+      setFolderStatus(perm === "granted" ? "connected" : "needs reconnect");
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
   // ---------- messaging ----------
 
   async function getTab() {
@@ -74,7 +248,8 @@
     "src/shared/title.js",
     "src/content/selectors.js",
     "src/content/cover-flow.js",
-    "src/content/content.js"
+    "src/content/content.js",
+    "src/content/row-indicators.js"
   ];
 
   // Injects into a tab that was already open when the extension was loaded.
@@ -83,6 +258,16 @@
       target: { tabId: tabId, allFrames: false },
       files: CONTENT_FILES
     });
+    // Manifest CSS is only applied on page load; a tab open across an extension
+    // reload needs it re-inserted or the badges render at 0×0.
+    try {
+      await chrome.scripting.insertCSS({
+        target: { tabId: tabId, allFrames: false },
+        files: ["src/content/row-indicators.css"]
+      });
+    } catch (err) {
+      console.warn("[SunoGen] indicator CSS injection failed", err);
+    }
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tabId, allFrames: false },
@@ -494,7 +679,19 @@
     renderBatchFields();
     renderPresets();
     renderPreview();
+    renderSettings();
     updateRunEnabled();
+  }
+
+  function renderSettings() {
+    setChecked("dl-badge-unlock", state.settings.showUnlockBadge !== false);
+    setChecked("dl-badge-history", state.settings.showHistoryBadge !== false);
+    setChecked("dl-badge-disk", state.settings.showDiskBadge !== false);
+  }
+
+  function setChecked(id, value) {
+    const el = $(id);
+    if (el) el.checked = value;
   }
 
   async function armPick(multiple) {
@@ -673,6 +870,19 @@
 
     $("diagnose").addEventListener("click", () => runDiagnose());
 
+    $("dl-badge-unlock").addEventListener("change", (e) =>
+      saveSettings({ showUnlockBadge: e.target.checked })
+    );
+    $("dl-badge-history").addEventListener("change", (e) =>
+      saveSettings({ showHistoryBadge: e.target.checked })
+    );
+    $("dl-badge-disk").addEventListener("change", (e) =>
+      saveSettings({ showDiskBadge: e.target.checked })
+    );
+
+    $("dl-folder").addEventListener("click", () => connectDownloadFolder());
+    $("dl-scan").addEventListener("click", () => scanDownloadFolder());
+
     const copyLog = async () => {
       const text =
         $("log").innerText +
@@ -818,6 +1028,7 @@
       console.warn("[SunoGen] initial inject skipped", err);
     }
     updatePageStatus();
+    refreshFolderStatus();
     if (!state.sources.length) {
       logLine("Pick source song(s), choose presets, then Generate batch.");
     }

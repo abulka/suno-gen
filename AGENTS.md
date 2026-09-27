@@ -54,6 +54,8 @@ node tools/probe.js --url=https://suno.com/me --inject '<js>'
 node tools/test-flow.js --title="two days" --style="..." --song="..." --ws="26-9 Mashes"
 node tools/test-flow.js ... --submit=yes   # ACTUALLY submits (spends credits)
 node tools/test-flow.js ... --batch=yes    # runs a 2-preset batch via runBatch
+node tools/inspect-audio.js --file=<path>  # dump tags/UUIDs of a Suno audio file
+node tools/inspect-audio.js --url=<url>    # same, from a URL (streams are encrypted)
 ```
 
 - `npm run chrome` spawns Chrome with `--remote-debugging-port=9222` and a
@@ -140,18 +142,39 @@ node tools/test-flow.js ... --batch=yes    # runs a 2-preset batch via runBatch
 - **Status logging** (panel): `logStatus()` dedupes by title+status and filters
   to the current batch's titles. Two channels report statuses (the `.clip-row`
   poll and the MAIN-world network hook); without this they double-log.
+- **Download badges** (`row-indicators.js`): small badges on each clip row's cover
+  show independent facts. Top-left: `unlocked` (grey padlock — free re-download;
+  shown only when unlocked, so locked clips get nothing) or, for the user's own
+  uploads (`metadata.type === "upload"`), `seed` (purple sprout) instead;
+  `history` (violet down-arrow — a download was seen in Chrome's history).
+  Top-right: `disk` (green tick — a file is on disk, tooltip shows the path).
+  The padlock/seed come from Suno's `clip.is_download_unlocked` + `metadata.type`
+  via the page hook; history/disk are local. Each badge has its own toggle in
+  panel Tools (`settings.showUnlockBadge`, `showHistoryBadge`, `showDiskBadge`).
+- **Local download sources** (`downloadedClips`): `history` from live
+  `chrome.downloads` events + a `chrome.downloads.search` backfill (can expire),
+  and `disk` from the Tools folder scan (File System Access), which is
+  authoritative — a rescan drops disk facts whose file is gone. Downloads are
+  matched by UUID in the URL (`/clip/<uuid>`, guarding against random `blob:`
+  UUIDs) or by filename → title (`clipTitles`, tolerating an `artist - ` prefix
+  added by other extensions). Suno files embed the exact id: M4A `©cmt`/WAV
+  `ICMT` `"made with suno; ... id=<uuid>"` and a C2PA `com.suno.provenance` /
+  `icontentIdx` block (`src/shared/audio-meta.js`). Streams are encrypted; only
+  saved files are readable (`tools/inspect-audio.js`).
 
 ## File map
 
 ```
-manifest.json                 MV3: sidePanel, storage, scripting; content scripts + MAIN-world hook
+manifest.json                 MV3: sidePanel, storage, scripting, downloads; content scripts + MAIN-world hook
 src/shared/title.js           title/workspace builders (loaded by content + panel)
-src/background/service-worker.js  defaults, side-panel behavior, getTab relay
+src/shared/audio-meta.js      reads the clip id out of downloaded audio tags (panel)
+src/background/service-worker.js  defaults, side-panel behavior, getTab relay, local download tracking
 src/panel/                    side panel UI (batch, presets, preview, Tools)
 src/content/selectors.js      ALL Suno selectors + resilient lookup/helpers
 src/content/cover-flow.js     the flow: open cover, fill badges, workspace, create, monitor
 src/content/content.js        messaging, pick-source, recorder, page-hook relay
-src/inject/page-hook.js       MAIN-world fetch/XHR observer for clip status
+src/content/row-indicators.js per-row unlock + download badges (CSS beside it)
+src/inject/page-hook.js       MAIN-world fetch/XHR observer: clip status + download metadata
 tools/                        Playwright harness (dev only)
 ```
 

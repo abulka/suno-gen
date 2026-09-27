@@ -70,6 +70,7 @@
     // --- library clip rows (native class; data-testid variant is injected by
     // another extension, kept only as a fallback) ---
     clipRow: ["div.clip-row[role='group']", ".clip-row", "[data-testid='clip-row']"],
+    clipCover: [".clip-image-container", "[class*='clip-image']", "img"],
     moreOptionsButton: [{ aria: "More options" }],
     clipSearchInput: [{ aria: "Search clips" }, { placeholder: "Search" }],
     libraryTab: [

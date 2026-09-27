@@ -173,6 +173,15 @@
       const data = ev.data;
       if (!data || data.source !== "sunogen-page") return;
       emit({ event: "page", payload: data.payload });
+      // Feed the service worker the clip title -> id map so downloads started
+      // via blob: URLs (whose UUID is random) can still be matched by filename.
+      if (data.payload && data.payload.event === "clip-meta" && Array.isArray(data.payload.items)) {
+        try {
+          chrome.runtime.sendMessage({ type: "SUNOGEN_CLIP_TITLES", items: data.payload.items });
+        } catch (err) {
+          /* extension may be reloading */
+        }
+      }
     });
   }
 

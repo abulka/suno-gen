@@ -128,6 +128,16 @@
             <button id="record-flow" type="button" class="btn btn-sm">Record flow</button>
             <button id="reload-ext" type="button" class="btn btn-sm">Reload extension</button>
           </div>
+          <div class="tools-toggles">
+            <label class="inline"><input id="dl-badge-unlock" type="checkbox" /> unlock/upload badge</label>
+            <label class="inline"><input id="dl-badge-history" type="checkbox" /> history badge</label>
+            <label class="inline"><input id="dl-badge-disk" type="checkbox" /> on-disk badge</label>
+          </div>
+          <div class="tools-folder">
+            <button id="dl-folder" type="button" class="btn btn-sm">Connect download folder</button>
+            <button id="dl-scan" type="button" class="btn btn-sm">Scan folder</button>
+            <span id="dl-folder-status" class="muted"></span>
+          </div>
           <div class="muted tools-hint">
             Diagnose dumps the live selector map; Record flow traces your clicks so menus can be mapped.
             Copy log includes the latest diagnostics.
@@ -138,6 +148,7 @@
     </main>
 
     <script src="../shared/title.js"></script>
+    <script src="../shared/audio-meta.js"></script>
     <script src="../content/cover-flow.js"></script>
     <script src="panel.js"></script>
   </body>

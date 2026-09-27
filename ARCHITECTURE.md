@@ -35,12 +35,14 @@ Style presets (code + style prompt + overrides) ─┤
 │  content.js: message router, pick-source, recorder
 │  selectors.js: selector map + resilient lookups
 │  cover-flow.js: runBatch + all DOM steps
+│  row-indicators.js: per-row unlock + download badges
 │  title.js: naming/workspace builders
 └─────────────▲──────────────┘
               │ window.postMessage({source:"sunogen-page"})
 ┌─────────────┴──────────────┐
-│ Page hook (MAIN world)     │  hooks fetch/XHR, extracts clip id/title/status
-│  page-hook.js              │  (deduped, id-required, skips pre-completed)
+│ Page hook (MAIN world)     │  hooks fetch/XHR + Response.json/text;
+│  page-hook.js              │  status (deduped, skips pre-completed) and
+│                            │  is_download_unlocked
 └────────────────────────────┘
 ```
 
@@ -50,13 +52,16 @@ Files: `src/panel/*`, `src/content/*`, `src/inject/page-hook.js`,
 ## Data model (`chrome.storage.local`)
 
 ```js
-settings = { delayMs, maxConcurrent, rating, autoDeriveWorkspace }
+settings = { delayMs, maxConcurrent, rating, autoDeriveWorkspace,
+             showUnlockBadge, showDiskBadge, showHistoryBadge }
 preset   = { id, name, styleCode, stylePrompt, lyrics, workspaceOverride, selected }
 source   = { clipId, title, url, status, songName }
 lastBatch= { batch: { songName, date, take, rating, workspace, autoWorkspace, globalTake },
              sources: [source] }
 job      = { presetId, presetName, styleCode, source, sourceIndex, songName,
              title, workspace, workspaceIsOverride }
+downloadedClips = { <clipId>: { history?: {at, filename}, disk?: {at, path, count} } }
+clipTitles      = { <clipId>: <title> }  // feeds filename-based download matching
 ```
 
 `date` = `YY-M`, `take` = 2-digit, `rating` default `iiiN`, `styleCode` = no
@@ -75,13 +80,21 @@ Panel → content (`chrome.tabs.sendMessage`, auto-injects + retries on failure)
 | `SUNOGEN_PREVIEW` | build jobs without DOM |
 | `SUNOGEN_RUN_BATCH` | run the batch (`config`, incl. `dryRun`) |
 
+Content → background: `SUNOGEN_CLIP_TITLES` (`{items:[{id,title}]}`) keeps the
+service worker's title→id map current for filename-based download matching.
+
 Content → panel (`chrome.runtime.sendMessage`, always `{type:"SUNOGEN_EVENT",
 event, ...}`): `pick-armed`, `pick-cancelled`, `pick-miss`, `source-picked`,
 `record-started`, `job-preview`, `job-start`, `job-submitted`, `job-error`,
 `monitor-start`, `job-status`, `batch-complete`, `page` (page-hook payload).
 
 page-hook → content: `window.postMessage({source:"sunogen-page", payload})` where
-payload is `{event:"hook-ready"}` or `{url, clips:[{id,title,status}], at}`.
+payload is:
+- `{event:"hook-ready"}`
+- `{url, clips:[{id,title,status}], at}` — generation status (feeds the monitor)
+- `{event:"clip-meta", items:[{id,title,unlocked,known,hasStem,upload}], at}` —
+  download metadata for every feed clip, deduped per id (`known` = Suno reported
+  the flag, `upload` = `metadata.type === "upload"`)
 
 ## Selector strategy
 
@@ -178,6 +191,7 @@ Per job (`runBatch` → `ensureCoverContext(job.source)` → fill → create):
 | Create workspace | `button[aria-label="Create new workspace"]` |
 | Workspace option | `button` text `"<name> (N clips)"` |
 | Clip row | `div.clip-row[role="group"][aria-label="<title>"][data-clip-status]` |
+| Clip cover | `.clip-image-container` (download badge anchors to it) |
 | Row menu | `button[aria-label="More options"]` |
 | Context menu portal | `div[data-context-menu="true"]` |
 | Submenu trigger | `button[data-context-menu-trigger="true"]` (e.g. Remix) |
@@ -185,9 +199,21 @@ Per job (`runBatch` → `ensureCoverContext(job.source)` → fill → create):
 | Confirm dialog | button text `Keep Current` |
 | Clip search | `input[aria-label="Search clips"]` |
 
+**Suno clip API fields** (from `/api/feed` responses, observed Sep 2026): every
+clip carries `is_download_unlocked` (boolean) — the source of the badge's
+`unlocked`/`locked` state. `metadata.has_stem` flags WAV availability. Suno's
+signed audio-download URLs embed the clip UUID, which is how `chrome.downloads`
+entries are mapped back to a clip. Downloaded files also embed the exact id:
+M4A/MP3 comment `"made with suno; created=…; id=<uuid>"` and a C2PA
+`com.suno.provenance` / `icontentIdx$<uuid>` block (read by
+`src/shared/audio-meta.js`), so a granted-folder scan can recognise files even
+after a rename. Streaming (`media_urls`) is client-side encrypted and not
+readable.
+
 **Injected by another extension (do not use):** `data-sm-*`, `data-tree-*`,
 `data-testid="clip-row"`, buttons titled "Download MP3 via Suno (S)", etc.
-(Suno Manager V3.)
+(Suno Manager V3 — its green "Saved" chip comes from live `chrome.downloads`
+tracking only; that's the behaviour `row-indicators.js` improves on.)
 
 ## Debugging & testing techniques (why the harness is built this way)
 
