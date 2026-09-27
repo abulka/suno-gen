@@ -111,10 +111,25 @@ async function recordHistory(id, info) {
   const store = await chrome.storage.local.get(DOWNLOADED_KEY);
   const current = store[DOWNLOADED_KEY] || {};
   const entry = current[id] || {};
-  if (entry.history) return;
+  if (entry.history) return false;
   entry.history = Object.assign({ at: Date.now() }, info);
   current[id] = entry;
   await chrome.storage.local.set({ [DOWNLOADED_KEY]: current });
+  return true;
+}
+
+/**
+ * Tell the side panel (if open) that a new download finished so it can rescan
+ * the connected folder and surface the on-disk badge. The panel is the only
+ * context holding the File System Access handle, so it owns the scan.
+ */
+function notifyDownloaded(id) {
+  try {
+    const p = chrome.runtime.sendMessage({ type: "SUNOGEN_DOWNLOADED", id: id });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (err) {
+    /* no panel open */
+  }
 }
 
 async function loadClipTitles() {
@@ -193,7 +208,9 @@ if (chrome.downloads && chrome.downloads.onChanged) {
         const item = items && items[0];
         const id = identifyDownload(item);
         if (!id) return;
-        return recordHistory(id, { filename: item.filename || null });
+        return recordHistory(id, { filename: item.filename || null }).then((changed) => {
+          if (changed) notifyDownloaded(id);
+        });
       })
       .catch(() => {});
   });

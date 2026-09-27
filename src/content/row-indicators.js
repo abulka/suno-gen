@@ -178,6 +178,24 @@
     document.querySelectorAll("." + GROUP_CLASS + ", ." + DISK_CLASS).forEach((n) => n.remove());
   }
 
+  function isBadgeNode(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const cls = node.classList;
+    if (cls && (cls.contains(GROUP_CLASS) || cls.contains(BADGE_CLASS) || cls.contains(DISK_CLASS))) {
+      return true;
+    }
+    return !!(node.closest && node.closest("." + GROUP_CLASS + ", ." + DISK_CLASS));
+  }
+
+  function isOwnMutation(record) {
+    if (isBadgeNode(record.target)) return true;
+    const nodes = [];
+    record.addedNodes.forEach((n) => nodes.push(n));
+    record.removedNodes.forEach((n) => nodes.push(n));
+    if (!nodes.length) return false;
+    return nodes.every(isBadgeNode);
+  }
+
   function scan() {
     if (stopped) return;
     if (!settings.showUnlockBadge && !settings.showDiskBadge && !settings.showHistoryBadge) {
@@ -253,7 +271,18 @@
     scan();
   }
 
-  const observer = new MutationObserver(() => scheduleScan());
+  const observer = new MutationObserver((records) => {
+    // Ignore mutations we caused ourselves (appending/removing/re-filling the
+    // badge elements). Without this, render -> childList mutation -> scheduleScan
+    // -> render becomes a self-sustaining 300 ms loop that visibly flickers,
+    // especially on an orphaned instance left behind by an extension reload.
+    for (const record of records) {
+      if (!isOwnMutation(record)) {
+        scheduleScan();
+        return;
+      }
+    }
+  });
 
   async function init() {
     seedFromGlobal();

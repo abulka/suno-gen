@@ -77,6 +77,7 @@
   const SCAN_CONCURRENCY = 6;
 
   let scanState = null;
+  let downloadScanTimer = null;
 
   let fsDbPromise = null;
 
@@ -419,6 +420,43 @@
     } catch (err) {
       /* ignore */
     }
+  }
+
+  /**
+   * Rescan only when a folder is already connected and its permission is still
+   * granted. Unlike `scanDownloadFolder`, this never calls `requestPermission`
+   * (there is no user gesture on the panel-open / download-complete paths), so
+   * a lapsed permission is a silent no-op rather than a "permission error".
+   */
+  async function autoScanDownloadFolder() {
+    if (scanState) return;
+    let handle;
+    try {
+      handle = await idbGet(FS_STORE, "downloadFolder");
+    } catch (err) {
+      return;
+    }
+    if (!handle) return;
+    let perm;
+    try {
+      perm = await handle.queryPermission({ mode: "read" });
+    } catch (err) {
+      return;
+    }
+    if (perm !== "granted") {
+      setFolderStatus("needs reconnect");
+      return;
+    }
+    await scanDownloadFolder();
+  }
+
+  /** Debounce rescans triggered by a completed download (may arrive in bursts). */
+  function scheduleDownloadScan() {
+    if (downloadScanTimer) clearTimeout(downloadScanTimer);
+    downloadScanTimer = setTimeout(() => {
+      downloadScanTimer = null;
+      autoScanDownloadFolder().catch(() => {});
+    }, 2500);
   }
 
   // ---------- messaging ----------
@@ -1151,7 +1189,12 @@
   }
 
   function onRuntimeMessage(msg) {
-    if (!msg || msg.type !== "SUNOGEN_EVENT") return;
+    if (!msg) return;
+    if (msg.type === "SUNOGEN_DOWNLOADED") {
+      scheduleDownloadScan();
+      return;
+    }
+    if (msg.type !== "SUNOGEN_EVENT") return;
     if (msg.event === "source-picked") {
       const added = addSource(msg.source);
       if (!pickMultiple) {
@@ -1221,6 +1264,7 @@
     }
     updatePageStatus();
     refreshFolderStatus();
+    autoScanDownloadFolder().catch(() => {});
     if (!state.sources.length) {
       logLine("Pick source song(s), choose presets, then Generate batch.");
     }

@@ -124,6 +124,10 @@ downloads folder (via the File System Access API). The scan:
 - Is **incremental**: it caches `{size, mtime, id}` per file in IndexedDB, so
   unchanged files are skipped on rescans. "Rebuild index" forces a clean
   re-resolve.
+- **Refreshes automatically** when the panel opens and a few seconds after a
+  download completes — but only while folder permission is still granted, so a
+  new download gets its green tick without a manual scan. If permission has
+  lapsed, use **Reconnect download folder** / **Scan folder**.
 
 Permissions for the folder are re-prompted by the browser after a restart; use
 **Reconnect download folder** to re-grant. Audio *streams* are encrypted and not

@@ -70,7 +70,10 @@ The folder-scan cache lives in IndexedDB (`sunogen-fs`/`scanIndex`,
 `{ rootName, files: { <relPath>: {size, mtime, id} } }`) so unchanged files are
 skipped on rescans; reconnecting to the same `rootName` keeps it, a different
 folder clears it, and a "Rebuild index" action clears it on demand. The granted
-`FileSystemDirectoryHandle` is stored in the same DB.
+`FileSystemDirectoryHandle` is stored in the same DB. Scans also run
+automatically on panel open and ~2.5 s after a download completes (the service
+worker messages the panel), but only while the handle's read permission is still
+`granted` — those paths have no user gesture, so a lapsed permission is skipped.
 
 `date` = `YY-M`, `take` = 2-digit, `rating` default `iiiN`, `styleCode` = no
 spaces ≤ 8 chars.

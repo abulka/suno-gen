@@ -176,7 +176,11 @@ node tools/inspect-audio.js --url=<url>    # same, from a URL (streams are encry
   so unchanged files are skipped on rescans. The record also stores `rootName`:
   reconnecting to the same folder keeps the cache, a different folder clears it
   (and drops disk facts). "Scan folder" reuses the cache; "Rebuild index" clears
-  it and re-resolves everything. The status reports `N read · M reused · K
+  it and re-resolves everything. It also re-scans **automatically** on panel open
+  and ~2.5 s after a download completes, but only when the folder permission is
+  still `granted` (no user gesture on those paths, so a lapsed permission is a
+  silent no-op — the panel's service-worker download event triggers it). The
+  status reports `N read · M reused · K
   matched`. Runs in the panel with progress + Cancel; caps at 20k files / depth 12.
 
 ## File map
