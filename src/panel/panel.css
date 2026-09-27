@@ -105,9 +105,35 @@ input:focus, textarea:focus { outline: 1px solid var(--accent); border-color: va
 .pill-warn { color: var(--warn); border-color: #3a2f13; }
 .pill-err { color: var(--err); border-color: #3f1d1b; }
 
-.source-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.source-info { font-size: 12px; flex: 1; }
 .muted { color: var(--muted); }
+
+.field-actions { display: flex; gap: 6px; }
+.source-list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.source-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.source-item .src-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-item .src-derived { color: var(--accent); font-family: ui-monospace, monospace; white-space: nowrap; }
+.source-item .icon-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
+.source-item .icon-btn:hover { color: var(--err); }
+.pick-status { font-size: 11px; min-height: 14px; }
+.pick-status.active { color: var(--accent); }
+.take-global { margin-bottom: 8px; }
+
+.job-group {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--accent);
+  margin-top: 4px;
+}
 
 .dest-info { font-size: 11px; margin-top: 2px; }
 .dest-info strong { color: var(--accent); }

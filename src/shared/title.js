@@ -89,6 +89,44 @@
     return (date + " " + songName).trim();
   }
 
+  /** The name to use for a source: explicit override, else derived, else title. */
+  function sourceName(source) {
+    return String(
+      (source && source.songName && String(source.songName).trim()) ||
+        deriveSongName(source && source.title) ||
+        (source && source.title) ||
+        ""
+    ).trim();
+  }
+
+  /**
+   * Names for a list of sources, disambiguating collisions with a short clip-id
+   * suffix (e.g. two "truck" sources -> "truck-a1b2", "truck-9f3c"). Stable so
+   * the panel listing, preview and execution all agree.
+   */
+  function uniqueSourceNames(sources) {
+    const list = Array.isArray(sources) ? sources : [];
+    const base = list.map((s) => sourceName(s) || "song");
+    const counts = new Map();
+    base.forEach((n) => counts.set(n, (counts.get(n) || 0) + 1));
+    const used = new Set();
+    return base.map((n, i) => {
+      let name = n;
+      if (counts.get(n) > 1) {
+        const id = String((list[i] && list[i].clipId) || "")
+          .replace(/[^a-z0-9]/gi, "")
+          .slice(0, 4)
+          .toLowerCase();
+        name = id ? n + "-" + id : n + "-" + (i + 1);
+      }
+      let cand = name;
+      let bump = 1;
+      while (used.has(cand)) cand = name + "-" + ++bump;
+      used.add(cand);
+      return cand;
+    });
+  }
+
   /**
    * Resolve the workspace for a preset, in priority order:
    *   1. preset workspace override
@@ -111,6 +149,8 @@
     normalizeTake: normalizeTake,
     offsetTake: offsetTake,
     deriveSongName: deriveSongName,
+    sourceName: sourceName,
+    uniqueSourceNames: uniqueSourceNames,
     buildTitle: buildTitle,
     buildWorkspace: buildWorkspace,
     resolveWorkspace: resolveWorkspace

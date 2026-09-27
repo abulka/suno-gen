@@ -458,24 +458,54 @@
 
   function buildJobs(config) {
     const { batch, presets } = config;
-    return presets
-      .filter((p) => p.selected !== false)
-      .map((preset, i) => ({
-        presetId: preset.id,
-        presetName: preset.name,
-        styleCode: preset.styleCode,
-        title: T.buildTitle({
-          date: batch.date,
-          // Suno always makes 2 clips per Create; step the take by 2 per style
-          // so the 2nd of each pair is left for manual editing.
-          take: T.offsetTake(batch.take, i * 2),
-          rating: batch.rating,
+    const sources =
+      Array.isArray(config.sources) && config.sources.length
+        ? config.sources
+        : config.source
+        ? [config.source]
+        : [];
+    const selected = presets.filter((p) => p.selected !== false);
+    const names = T.uniqueSourceNames(sources);
+    const globalTake = batch.globalTake !== false;
+    const jobs = [];
+    let jobIndex = 0;
+
+    sources.forEach((source, sourceIndex) => {
+      const songName = names[sourceIndex];
+      // Auto workspace is derived PER SOURCE; manual means one workspace for all.
+      const wsBatch = {
+        date: batch.date,
+        songName: songName,
+        workspace:
+          batch.autoWorkspace === false
+            ? batch.workspace
+            : T.buildWorkspace({ date: batch.date, songName: songName })
+      };
+      selected.forEach((preset, presetIndex) => {
+        // Suno always makes 2 clips per Create; step the take by 2. Global mode
+        // keeps counting across songs, otherwise it resets per song.
+        const offset = (globalTake ? jobIndex : presetIndex) * 2;
+        jobs.push({
+          presetId: preset.id,
+          presetName: preset.name,
           styleCode: preset.styleCode,
-          songName: batch.songName
-        }),
-        workspace: T.resolveWorkspace(batch, preset),
-        workspaceIsOverride: !!(preset.workspaceOverride && preset.workspaceOverride.trim())
-      }));
+          source: source,
+          sourceIndex: sourceIndex,
+          songName: songName,
+          title: T.buildTitle({
+            date: batch.date,
+            take: T.offsetTake(batch.take, offset),
+            rating: batch.rating,
+            styleCode: preset.styleCode,
+            songName: songName
+          }),
+          workspace: T.resolveWorkspace(wsBatch, preset),
+          workspaceIsOverride: !!(preset.workspaceOverride && preset.workspaceOverride.trim())
+        });
+        jobIndex++;
+      });
+    });
+    return jobs;
   }
 
   /**
@@ -526,7 +556,7 @@
     const delay = Math.max(0, settings.delayMs || 4000);
     const jobs = buildJobs(config);
 
-    if (!jobs.length) throw new Error("No presets selected.");
+    if (!jobs.length) throw new Error("No source(s)/presets selected.");
     if (config.dryRun) {
       for (const job of jobs) log({ type: "job-preview", job: job });
       return jobs;
@@ -538,8 +568,9 @@
       const preset = config.presets.find((p) => p.id === job.presetId);
       log({ type: "job-start", index: i, total: jobs.length, job: job });
       try {
-        // Re-attach the cover each time; Create may reset the form.
-        await ensureCoverContext(config.source);
+        // Re-attach the cover for THIS job's source each time; Create may reset
+        // the form and switching sources must actually swap the loaded audio.
+        await ensureCoverContext(job.source);
         await fillStyle(preset.stylePrompt);
         await fillTitle(job.title);
         await fillLyrics(preset.lyrics || settings.lyricsText || "[instrumental]");

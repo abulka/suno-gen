@@ -17,9 +17,17 @@
       <section class="card">
         <h2>Batch</h2>
 
-        <div class="source-row">
-          <button id="pick-source" type="button" class="btn">Pick source song</button>
-          <div id="source-info" class="source-info muted">No source selected</div>
+        <div class="full field">
+          <div class="field-head">
+            <span>Song sources</span>
+            <div class="field-actions">
+              <button id="pick-source" type="button" class="btn btn-sm">+ Pick</button>
+              <button id="pick-multiple" type="button" class="btn btn-sm">+ Pick multiple</button>
+              <button id="clear-sources" type="button" class="btn btn-sm btn-ghost">Clear</button>
+            </div>
+          </div>
+          <div id="pick-status" class="muted pick-status"></div>
+          <div id="source-list" class="source-list"></div>
         </div>
 
         <div class="grid">
@@ -40,6 +48,11 @@
             <input id="rating" type="text" placeholder="iiiN" />
           </label>
         </div>
+
+        <label class="inline full take-global">
+          <input id="take-global" type="checkbox" />
+          take continues across songs (uncheck to reset per song)
+        </label>
 
         <div class="full field">
           <div class="field-head">

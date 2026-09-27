@@ -52,9 +52,11 @@ Files: `src/panel/*`, `src/content/*`, `src/inject/page-hook.js`,
 ```js
 settings = { delayMs, maxConcurrent, rating, autoDeriveWorkspace }
 preset   = { id, name, styleCode, stylePrompt, lyrics, workspaceOverride, selected }
-lastBatch= { batch: { songName, date, take, rating, workspace, autoWorkspace },
-             source: { clipId, title, url, status } }
-job      = { presetId, presetName, styleCode, title, workspace, workspaceIsOverride }
+source   = { clipId, title, url, status, songName }
+lastBatch= { batch: { songName, date, take, rating, workspace, autoWorkspace, globalTake },
+             sources: [source] }
+job      = { presetId, presetName, styleCode, source, sourceIndex, songName,
+             title, workspace, workspaceIsOverride }
 ```
 
 `date` = `YY-M`, `take` = 2-digit, `rating` default `iiiN`, `styleCode` = no
@@ -66,8 +68,8 @@ Panel → content (`chrome.tabs.sendMessage`, auto-injects + retries on failure)
 
 | type | purpose |
 |------|---------|
-| `SUNOGEN_PING` | liveness / page info |
-| `SUNOGEN_START_PICK` / `SUNOGEN_CANCEL_PICK` | arm click-to-pick source |
+| `SUNOGEN_PING` | liveness / page info (incl. `pick: {active,multiple}`) |
+| `SUNOGEN_START_PICK` (`{multiple}`) / `SUNOGEN_CANCEL_PICK` | arm click-to-pick; `multiple` stays armed until Esc |
 | `SUNOGEN_DIAGNOSE` | selector report + fingerprint |
 | `SUNOGEN_RECORD_START` / `SUNOGEN_RECORD_STOP` | click/hover recorder |
 | `SUNOGEN_PREVIEW` | build jobs without DOM |
@@ -108,6 +110,9 @@ functions in `selectors.js` rather than fragile CSS.
 - `deriveSongName(title)` — from a picked clip's aria-label: drop `· <uuid>`,
   strip a leading `YYYY-MM-DD`/`YY-M` date, take the last ` - ` segment, else
   strip a leading `take-rating` token. `"2026-07-28 arlie · <uuid>"` → `"arlie"`.
+- `uniqueSourceNames(sources)` — per-source name (`songName` override → derived),
+  disambiguating duplicates with a 4-char clip-id suffix. Used by the panel list,
+  the preview and `buildJobs` so all three agree.
 - `buildWorkspace({date,songName})` → `"26-9 happy song"`.
 - `resolveWorkspace(batch, preset)`: **preset override → `batch.workspace` →
   derived**. (Regression: an earlier version skipped `batch.workspace` and always
@@ -118,7 +123,13 @@ functions in `selectors.js` rather than fragile CSS.
 
 ## Cover flow sequence (`cover-flow.js`)
 
-Per job (`runBatch` → `ensureCoverContext` → fill → create):
+`buildJobs(config)` expands **sources × selected presets** into jobs. Each job
+carries its own `source` and per-source `workspace` (auto → `{date} {song}` per
+source; manual → one workspace for all). `take` steps by 2 per job; with
+`globalTake` (default) it keeps counting across songs, otherwise it resets per
+song.
+
+Per job (`runBatch` → `ensureCoverContext(job.source)` → fill → create):
 
 1. `ensureSourceRow(title)` — find `.clip-row[aria-label=title]`; if absent, SPA-click
    the Library tab, **wait for the `/me` route and the clip search to exist**

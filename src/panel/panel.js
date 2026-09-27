@@ -8,8 +8,16 @@
   let state = {
     presets: [],
     settings: {},
-    batch: { songName: "", date: "", take: "01", rating: "iiiN", workspace: "", autoWorkspace: true },
-    source: null
+    batch: {
+      songName: "",
+      date: "",
+      take: "01",
+      rating: "iiiN",
+      workspace: "",
+      autoWorkspace: true,
+      globalTake: true
+    },
+    sources: []
   };
   let editingId = null;
   let recording = false;
@@ -17,6 +25,8 @@
   let batchRunning = false;
   let activeJobTitles = new Set();
   let lastStatusByTitle = new Map();
+  let pickMode = false;
+  let pickMultiple = false;
 
   // ---------- storage ----------
 
@@ -24,15 +34,20 @@
     const data = await chrome.storage.local.get(["presets", "settings", "lastBatch"]);
     state.presets = Array.isArray(data.presets) ? data.presets : [];
     state.settings = data.settings || {};
-    if (data.lastBatch && data.lastBatch.batch) {
-      state.batch = Object.assign(state.batch, data.lastBatch.batch);
-      state.source = data.lastBatch.source || null;
+    if (data.lastBatch) {
+      if (data.lastBatch.batch) state.batch = Object.assign(state.batch, data.lastBatch.batch);
+      if (Array.isArray(data.lastBatch.sources)) {
+        state.sources = data.lastBatch.sources;
+      } else if (data.lastBatch.source) {
+        state.sources = [data.lastBatch.source];
+      }
     }
     if (!state.batch.date) state.batch.date = T.todayYYM();
     if (!state.batch.rating) state.batch.rating = state.settings.rating || "iiiN";
     if (state.batch.autoWorkspace === undefined) {
       state.batch.autoWorkspace = state.settings.autoDeriveWorkspace !== false;
     }
+    if (state.batch.globalTake === undefined) state.batch.globalTake = true;
   }
 
   async function savePresets() {
@@ -41,7 +56,7 @@
 
   async function saveBatch() {
     state.batch = readBatchFromDom();
-    await chrome.storage.local.set({ lastBatch: { batch: state.batch, source: state.source } });
+    await chrome.storage.local.set({ lastBatch: { batch: state.batch, sources: state.sources } });
   }
 
   // ---------- messaging ----------
@@ -143,9 +158,14 @@
           return;
         }
         try {
-          await sendToContent("SUNOGEN_PING");
+          const res = await sendToContent("SUNOGEN_PING");
           el.textContent = "connected";
           el.className = "pill pill-ok";
+          if (res && res.pick) {
+            pickMode = !!res.pick.active;
+            pickMultiple = !!res.pick.multiple;
+            updatePickStatus();
+          }
         } catch (err) {
           el.textContent = "no connection";
           el.className = "pill pill-err";
@@ -156,13 +176,14 @@
   }
 
   function renderBatchFields() {
-    $("song-name").value = state.batch.songName;
     $("date").value = state.batch.date;
     $("take").value = state.batch.take;
     $("rating").value = state.batch.rating;
     $("auto-workspace").checked = state.batch.autoWorkspace;
+    $("take-global").checked = state.batch.globalTake !== false;
+    renderSources();
     syncWorkspace();
-    renderSource();
+    updatePickStatus();
   }
 
   /**
@@ -170,32 +191,36 @@
    * cached value can never disagree with what the panel shows.
    */
   function readBatchFromDom() {
-    const songName = $("song-name").value;
-    const date = $("date").value;
     const autoWorkspace = $("auto-workspace").checked;
-    const workspace = autoWorkspace
-      ? T.buildWorkspace({ date: date, songName: songName })
-      : $("workspace").value;
     return {
-      songName: songName,
-      date: date,
+      // With one source the field is authoritative; with many, names are
+      // derived per source (see title.js:uniqueSourceNames).
+      songName: state.sources.length === 1 ? $("song-name").value : "",
+      date: $("date").value,
       take: $("take").value,
       rating: $("rating").value,
-      workspace: workspace,
-      autoWorkspace: autoWorkspace
+      // Auto workspace is derived per source in buildJobs, so leave it blank.
+      workspace: autoWorkspace ? "" : $("workspace").value,
+      autoWorkspace: autoWorkspace,
+      globalTake: $("take-global").checked
     };
   }
 
   function syncWorkspace() {
     const input = $("workspace");
     const auto = $("auto-workspace").checked;
-    if (auto) {
-      input.value = T.buildWorkspace({
-        date: $("date").value,
-        songName: $("song-name").value
-      });
-    }
     input.readOnly = auto;
+    if (auto) {
+      if (state.sources.length > 1) {
+        input.value = "(per song)";
+      } else {
+        const songName =
+          state.sources.length === 1
+            ? T.uniqueSourceNames(state.sources)[0] || ""
+            : $("song-name").value;
+        input.value = T.buildWorkspace({ date: $("date").value, songName: songName });
+      }
+    }
     updateDestInfo();
   }
 
@@ -203,28 +228,134 @@
     const el = $("dest-info");
     if (!el) return;
     const auto = $("auto-workspace").checked;
-    const ws = auto
-      ? T.buildWorkspace({ date: $("date").value, songName: $("song-name").value })
-      : $("workspace").value;
     el.innerHTML = "";
     el.appendChild(document.createTextNode("Destination: "));
     const strong = document.createElement("strong");
-    strong.textContent = ws || "(none)";
+    let note;
+    if (auto && state.sources.length > 1) {
+      strong.textContent = "one per song";
+      note = "  (auto: {date} {song})";
+    } else if (auto) {
+      const songName =
+        state.sources.length === 1
+          ? T.uniqueSourceNames(state.sources)[0] || ""
+          : $("song-name").value;
+      strong.textContent =
+        T.buildWorkspace({ date: $("date").value, songName: songName }) || "(none)";
+      note = "  (auto from date + name)";
+    } else {
+      strong.textContent = $("workspace").value || "(none)";
+      note = "  (manual, all songs)";
+    }
     el.appendChild(strong);
-    el.appendChild(
-      document.createTextNode(auto ? "  (auto from date + name)" : "  (manual)")
-    );
+    el.appendChild(document.createTextNode(note));
   }
 
-  function renderSource() {
-    const el = $("source-info");
-    if (state.source && state.source.clipId) {
-      el.textContent = (state.source.title || "untitled") + "  ·  " + state.source.clipId;
-      el.className = "source-info";
-    } else {
-      el.textContent = "No source selected";
-      el.className = "source-info muted";
+  function renderSources() {
+    const list = $("source-list");
+    if (!list) return;
+    list.innerHTML = "";
+    const names = T.uniqueSourceNames(state.sources);
+    state.sources.forEach((src, i) => {
+      const row = document.createElement("div");
+      row.className = "source-item";
+
+      const name = document.createElement("span");
+      name.className = "src-name";
+      name.textContent = src.title || src.clipId || "untitled";
+      name.title = name.textContent;
+      row.appendChild(name);
+
+      const derived = document.createElement("span");
+      derived.className = "src-derived";
+      derived.textContent = "→ " + names[i];
+      row.appendChild(derived);
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "icon-btn";
+      del.title = "Remove";
+      del.textContent = "×";
+      del.addEventListener("click", () => removeSource(i));
+      row.appendChild(del);
+
+      list.appendChild(row);
+    });
+    if (!state.sources.length) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.textContent = "No sources yet.";
+      list.appendChild(empty);
     }
+    syncSongNameField();
+  }
+
+  function syncSongNameField() {
+    const input = $("song-name");
+    const multi = state.sources.length > 1;
+    input.disabled = multi;
+    input.placeholder = multi ? "(derived per song)" : "happy song";
+    if (document.activeElement === input) return; // don't clobber while typing
+    if (multi) input.value = "";
+    else if (state.sources.length === 1) input.value = T.uniqueSourceNames(state.sources)[0] || "";
+    else input.value = state.batch.songName || "";
+  }
+
+  function addSource(source) {
+    if (!source) return false;
+    const id = source.clipId || source.title;
+    if (id && state.sources.some((s) => (s.clipId || s.title) === id)) {
+      logLine("Already added: " + (source.title || id));
+      return false;
+    }
+    state.sources.push(Object.assign({}, source, { songName: T.deriveSongName(source.title) }));
+    saveBatch();
+    renderSources();
+    syncWorkspace();
+    renderPreview();
+    updateRunEnabled();
+    updatePickStatus();
+    return true;
+  }
+
+  function removeSource(i) {
+    state.sources.splice(i, 1);
+    saveBatch();
+    renderSources();
+    syncWorkspace();
+    renderPreview();
+    updateRunEnabled();
+    updatePickStatus();
+  }
+
+  function clearSources() {
+    state.sources = [];
+    saveBatch();
+    renderSources();
+    syncWorkspace();
+    renderPreview();
+    updateRunEnabled();
+    updatePickStatus();
+    logLine("Cleared sources.");
+  }
+
+  function updatePickStatus() {
+    const el = $("pick-status");
+    if (el) {
+      if (pickMode) {
+        el.textContent =
+          "Picking" + (pickMultiple ? " (multiple)" : "") + "… click a song. Esc to stop.";
+        el.className = "pick-status active";
+      } else if (state.sources.length) {
+        el.textContent = state.sources.length + " source(s) selected";
+        el.className = "muted pick-status";
+      } else {
+        el.textContent = "";
+        el.className = "muted pick-status";
+      }
+    }
+    const btn = $("pick-multiple");
+    if (btn) btn.textContent = pickMode && pickMultiple ? "Stop picking" : "+ Pick multiple";
   }
 
   function renderPresets() {
@@ -299,7 +430,8 @@
 
   function currentConfig() {
     return {
-      source: state.source,
+      sources: state.sources.map((s) => Object.assign({}, s)),
+      source: state.sources[0] || null,
       batch: readBatchFromDom(),
       presets: state.presets.map((p) => Object.assign({}, p)),
       settings: state.settings
@@ -317,11 +449,25 @@
     }
     if (!jobs.length) {
       el.className = "preview muted";
-      el.textContent = "Select presets and fill the batch fields.";
+      el.textContent = "Pick source song(s), select presets, fill the batch fields.";
       return;
     }
     el.className = "preview";
+    const summary = document.createElement("div");
+    summary.className = "muted";
+    summary.textContent =
+      jobs.length + " job(s) · " + state.sources.length + " song(s)";
+    el.appendChild(summary);
+    let lastGroup = null;
     for (const job of jobs) {
+      const group = job.songName || "(song)";
+      if (group !== lastGroup) {
+        lastGroup = group;
+        const head = document.createElement("div");
+        head.className = "job-group";
+        head.textContent = group;
+        el.appendChild(head);
+      }
       const row = document.createElement("div");
       row.className = "job";
       const title = document.createElement("div");
@@ -338,9 +484,9 @@
 
   function updateRunEnabled() {
     const ready =
-      !!state.source &&
-      !!$("song-name").value.trim() &&
-      state.presets.some((p) => p.selected !== false);
+      state.sources.length > 0 &&
+      state.presets.some((p) => p.selected !== false) &&
+      (state.sources.length > 1 || !!($("song-name").value || "").trim());
     $("run-batch").disabled = !ready;
   }
 
@@ -349,6 +495,33 @@
     renderPresets();
     renderPreview();
     updateRunEnabled();
+  }
+
+  async function armPick(multiple) {
+    try {
+      await sendToContent("SUNOGEN_START_PICK", { multiple: multiple });
+      pickMode = true;
+      pickMultiple = !!multiple;
+      updatePickStatus();
+      logLine(
+        multiple
+          ? "Pick mode (multiple) — click songs to add; Esc or Stop when done."
+          : "Pick mode armed — click a song on the page."
+      );
+    } catch (err) {
+      logLine(String((err && err.message) || err), "err");
+    }
+  }
+
+  async function disarmPick() {
+    try {
+      await sendToContent("SUNOGEN_CANCEL_PICK");
+    } catch (err) {
+      /* ignore */
+    }
+    pickMode = false;
+    pickMultiple = false;
+    updatePickStatus();
   }
 
   // ---------- preset editor ----------
@@ -466,6 +639,8 @@
 
   function wire() {
     const onBatchInput = () => {
+      if (state.sources.length === 1) state.sources[0].songName = $("song-name").value;
+      renderSources();
       syncWorkspace();
       saveBatch();
       renderPreview();
@@ -477,6 +652,7 @@
     $("rating").addEventListener("input", onBatchInput);
     $("workspace").addEventListener("input", onBatchInput);
     $("auto-workspace").addEventListener("change", onBatchInput);
+    $("take-global").addEventListener("change", onBatchInput);
 
     $("add-preset").addEventListener("click", () => openEditor(null));
     $("cancel-edit").addEventListener("click", closeEditor);
@@ -488,14 +664,12 @@
       if (cleaned !== e.target.value) e.target.value = cleaned;
     });
 
-    $("pick-source").addEventListener("click", async () => {
-      try {
-        await sendToContent("SUNOGEN_START_PICK");
-        logLine("Pick mode armed — click a song on the page.");
-      } catch (err) {
-        logLine(String(err.message || err), "err");
-      }
+    $("pick-source").addEventListener("click", () => armPick(false));
+    $("pick-multiple").addEventListener("click", () => {
+      if (pickMode && pickMultiple) disarmPick();
+      else armPick(true);
     });
+    $("clear-sources").addEventListener("click", clearSources);
 
     $("diagnose").addEventListener("click", () => runDiagnose());
 
@@ -577,19 +751,20 @@
   function onRuntimeMessage(msg) {
     if (!msg || msg.type !== "SUNOGEN_EVENT") return;
     if (msg.event === "source-picked") {
-      state.source = msg.source;
-      const derived = T.deriveSongName(msg.source.title);
-      if (derived) $("song-name").value = derived;
-      syncWorkspace();
-      saveBatch();
-      renderSource();
-      renderPreview();
-      updateRunEnabled();
-      logLine("Source set: " + (msg.source.title || msg.source.clipId), "ok");
-      if (derived) logLine("  song name → " + derived);
+      const added = addSource(msg.source);
+      if (!pickMultiple) {
+        pickMode = false;
+        updatePickStatus();
+      }
+      if (added) logLine("Added source: " + (msg.source.title || msg.source.clipId), "ok");
     } else if (msg.event === "pick-armed") {
-      // already announced by the button handler
+      pickMode = true;
+      pickMultiple = !!msg.multiple;
+      updatePickStatus();
     } else if (msg.event === "pick-cancelled") {
+      pickMode = false;
+      pickMultiple = false;
+      updatePickStatus();
       logLine("Pick cancelled.");
     } else if (msg.event === "pick-miss") {
       logLine(msg.message || "No song card detected.", "err");
@@ -643,8 +818,8 @@
       console.warn("[SunoGen] initial inject skipped", err);
     }
     updatePageStatus();
-    if (!state.source) {
-      logLine("Pick a source song, choose presets, then Generate batch.");
+    if (!state.sources.length) {
+      logLine("Pick source song(s), choose presets, then Generate batch.");
     }
     readRecording()
       .then((rec) => {

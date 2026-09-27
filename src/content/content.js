@@ -14,8 +14,32 @@
   const Flow = globalThis.SunoGenCoverFlow;
   console.log("[SunoGen] content script loaded on", location.href);
 
-  let pickActive = false;
-  let pickOverlay = null;
+  // Pick mode state lives on globalThis so a re-injected copy reuses the same
+  // listeners/state, and in sessionStorage so it survives SPA navigation/reload.
+  const PICK_KEY = "sunogen-pick";
+
+  function pickStore() {
+    if (!globalThis.__sunogenPick) {
+      globalThis.__sunogenPick = { active: false, multiple: false, overlay: null, onClick: null, onKey: null };
+    }
+    return globalThis.__sunogenPick;
+  }
+
+  function readPickPersist() {
+    try {
+      return JSON.parse(sessionStorage.getItem(PICK_KEY) || '{"active":false,"multiple":false}');
+    } catch (err) {
+      return { active: false, multiple: false };
+    }
+  }
+
+  function writePickPersist(st) {
+    try {
+      sessionStorage.setItem(PICK_KEY, JSON.stringify(st));
+    } catch (err) {
+      /* ignore */
+    }
+  }
 
   function emit(payload) {
     try {
@@ -50,36 +74,46 @@
 
   function cardFromEventTarget(target) {
     if (!target || !target.closest) return null;
-    return (
-      target.closest(".clip-row") ||
-      target.closest("[data-testid='clip-row']") ||
-      target.closest("[data-clip-id]") ||
-      null
-    );
+    // Only real clip rows count. Do NOT match a bare [data-clip-id]: while
+    // navigating workspaces in pick-multiple mode, workspace/folder rows may be
+    // tagged by another extension and must not be treated as song cards.
+    return target.closest(".clip-row") || target.closest("[data-testid='clip-row']") || null;
   }
 
   function onPickClick(ev) {
-    if (!pickActive) return;
+    const pick = pickStore();
+    if (!pick.active) return;
     const card = cardFromEventTarget(ev.target);
     const source = extractSourceFromCard(card);
     if (!source) {
-      emit({ event: "pick-miss", message: "Click directly on a song card." });
+      // Not a song card. In multiple mode this is likely navigating between
+      // workspaces — let it through silently. Single mode nudges once.
+      if (!pick.multiple) emit({ event: "pick-miss", message: "Click directly on a song card." });
       return;
     }
     ev.preventDefault();
     ev.stopPropagation();
     ev.stopImmediatePropagation();
-    stopPick();
     emit({ event: "source-picked", source });
+    if (!pick.multiple) stopPick();
   }
 
-  function startPick() {
-    if (pickActive) return;
-    pickActive = true;
-    pickOverlay = document.createElement("div");
-    pickOverlay.id = "sunogen-pick-overlay";
-    pickOverlay.textContent = "Click a song to use as the cover source (Esc to cancel)";
-    Object.assign(pickOverlay.style, {
+  function onPickKey(ev) {
+    if (!pickStore().active) return;
+    if (ev.key === "Escape") {
+      stopPick();
+      emit({ event: "pick-cancelled" });
+    }
+  }
+
+  function renderPickOverlay(pick) {
+    if (pick.overlay && pick.overlay.parentNode) pick.overlay.parentNode.removeChild(pick.overlay);
+    const el = document.createElement("div");
+    el.id = "sunogen-pick-overlay";
+    el.textContent = pick.multiple
+      ? "Pick (multiple) — click songs to add · Esc / Stop when done"
+      : "Click a song to use as the cover source (Esc to cancel)";
+    Object.assign(el.style, {
       position: "fixed",
       top: "12px",
       left: "50%",
@@ -93,27 +127,42 @@
       boxShadow: "0 4px 20px rgba(0,0,0,.4)",
       pointerEvents: "none"
     });
-    document.documentElement.style.cursor = "crosshair";
-    document.addEventListener("click", onPickClick, true);
-    document.addEventListener("keydown", onPickKey, true);
-    document.body.appendChild(pickOverlay);
-    emit({ event: "pick-armed" });
+    document.body.appendChild(el);
+    pick.overlay = el;
   }
 
-  function onPickKey(ev) {
-    if (ev.key === "Escape") {
-      stopPick();
-      emit({ event: "pick-cancelled" });
+  function startPick(multiple) {
+    const pick = pickStore();
+    pick.multiple = !!multiple;
+    if (!pick.active) {
+      pick.active = true;
+      pick.onClick = pick.onClick || onPickClick;
+      pick.onKey = pick.onKey || onPickKey;
+      document.addEventListener("click", pick.onClick, true);
+      document.addEventListener("keydown", pick.onKey, true);
+      document.documentElement.style.cursor = "crosshair";
     }
+    renderPickOverlay(pick);
+    writePickPersist({ active: true, multiple: pick.multiple });
+    emit({ event: "pick-armed", multiple: pick.multiple });
   }
 
   function stopPick() {
-    pickActive = false;
-    document.removeEventListener("click", onPickClick, true);
-    document.removeEventListener("keydown", onPickKey, true);
+    const pick = pickStore();
+    pick.active = false;
+    pick.multiple = false;
+    if (pick.onClick) document.removeEventListener("click", pick.onClick, true);
+    if (pick.onKey) document.removeEventListener("keydown", pick.onKey, true);
     document.documentElement.style.cursor = "";
-    if (pickOverlay && pickOverlay.parentNode) pickOverlay.parentNode.removeChild(pickOverlay);
-    pickOverlay = null;
+    if (pick.overlay && pick.overlay.parentNode) pick.overlay.parentNode.removeChild(pick.overlay);
+    pick.overlay = null;
+    writePickPersist({ active: false, multiple: false });
+  }
+
+  // Resume pick mode if the page reloaded/re-injected mid-pick.
+  {
+    const persisted = readPickPersist();
+    if (persisted.active) startPick(persisted.multiple);
   }
 
   // Relay generation-status events from the MAIN-world hook (install once).
@@ -244,12 +293,13 @@
       ok: true,
       url: location.href,
       isSuno: /(^|\.)suno\.com$/.test(location.hostname),
-      selectorsReady: !!S
+      selectorsReady: !!S,
+      pick: readPickPersist()
     }),
 
-    SUNOGEN_START_PICK: () => {
-      startPick();
-      return { ok: true };
+    SUNOGEN_START_PICK: (msg) => {
+      startPick(msg && msg.multiple);
+      return { ok: true, multiple: !!(msg && msg.multiple) };
     },
 
     SUNOGEN_CANCEL_PICK: () => {

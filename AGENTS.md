@@ -123,8 +123,16 @@ node tools/test-flow.js ... --batch=yes    # runs a 2-preset batch via runBatch
   - `rating` default literal `iiiN` (searchable prefix + placeholder edited later)
   - `styleCode` = no spaces, ≤ 8 chars (`70s jam` → `70sjam`)
   - Example: `26-9 01-iiiN qhvy - happy song`
-- **Picking a source** auto-fills Song name via `title.js:deriveSongName`
-  (`2026-07-28 arlie · <uuid>` → `arlie`); always overwrites the field.
+- **Sources (multi):** the panel keeps an ordered list of source songs (`Pick`
+  = one shot, `Pick multiple` = stays armed until Esc; both persisted in
+  `sessionStorage` so they survive SPA navigation/re-injection). Deduped by
+  `clipId`. Each source's Song name is derived (`title.js:deriveSongName`); with
+  >1 source the Song name field is disabled and names are per-source
+  (`title.js:uniqueSourceNames`, duplicates get a 4-char clip-id suffix).
+- **Job list:** `buildJobs` = sources × selected presets. `take` steps by 2 per
+  job; the `take continues across songs` checkbox (`batch.globalTake`, default
+  on) controls whether the take counts globally or resets per source. Auto
+  workspace is per source (`{date} {song}`); manual workspace applies to all.
 - **Workspace:** default `{date} {songName}` (e.g. `26-9 bird song`); per-preset
   override wins; missing workspaces are auto-created (user preference).
 - **Resolution order** (`title.js:resolveWorkspace`): preset override → batch
@@ -152,6 +160,9 @@ tools/                        Playwright harness (dev only)
 - No "pre-flight" workspace resolution pass before job 1 (per-job verify exists).
 - Monitoring polls visible rows only; scroll away and it stops waiting (submit is
   unaffected).
+- Two *distinct* clips with an identical title can't be told apart when re-finding
+  the row (Suno rows expose only the title, no clip-id attr). Names/titles stay
+  unique via `uniqueSourceNames`, but row selection may take the first match.
 - Optional: preset import/export; per-preset "variants" bookkeeping (always 2).
 
 ## Suggested first actions for a new session
