@@ -9,6 +9,7 @@
   <body>
     <header class="topbar">
       <h1>SunoGen</h1>
+      <button id="copy-log-top" type="button" class="btn btn-sm" title="Copy the SunoGen log (+ diagnostics) to the clipboard">Copy log</button>
       <span id="page-status" class="pill pill-warn">checking page…</span>
     </header>
 
@@ -77,10 +78,6 @@
         <label class="full">
           Style prompt
           <textarea id="p-style" rows="3" placeholder="warm acoustic folk, fingerpicked guitar, intimate vocals"></textarea>
-        </label>
-        <label class="full">
-          Model
-          <input id="p-model" type="text" placeholder="(default)" />
         </label>
         <label class="full">
           Workspace override

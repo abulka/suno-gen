@@ -3,7 +3,6 @@
 const STORAGE_KEYS = ["presets", "settings", "lastBatch"];
 
 const DEFAULT_SETTINGS = {
-  defaultModel: "v5",
   delayMs: 4000,
   maxConcurrent: 3,
   rating: "iiiN",
@@ -17,7 +16,6 @@ const DEFAULT_PRESETS = [
     styleCode: "qhvy",
     stylePrompt: "",
     workspaceOverride: "",
-    model: "",
     instrumental: false
   }
 ];

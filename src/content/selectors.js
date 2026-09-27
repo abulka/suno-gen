@@ -31,7 +31,6 @@
     soundsTab: [{ aria: "Sounds" }],
 
     // --- top toolbar ---
-    modelButton: [{ textMatch: /^v\d+(\.\d+)?$/i, scope: "button,[role='button']" }],
     addAudioButton: [{ aria: "Add audio - Browse, upload, or record audio" }, { aria: "Add audio" }],
     addVoiceButton: [{ aria: "Add Voice" }],
     addImageButton: [{ aria: "Add an image to your creation." }],
@@ -79,12 +78,30 @@
     ],
 
     // --- clip context menu (portals, appear on demand) ---
+    // Scope these to the menu portal: the create panel also renders buttons
+    // whose aria-label *contains* these words (e.g. "Change condition type
+    // from Cover"), and a global match would click the wrong element.
     menuRoot: ["[data-context-menu='true']", "[role='menu']"],
-    menuCover: [{ aria: "Cover" }],
-    menuReusePrompt: [{ aria: "Reuse Prompt" }],
-    menuMashup: [{ aria: "Mashup" }],
-    menuSample: [{ aria: "Sample this song" }],
-    menuInspiration: [{ aria: "Use as Inspiration" }],
+    menuCover: [
+      "[data-context-menu='true'] button[aria-label='Cover']",
+      "[role='menu'] button[aria-label='Cover']"
+    ],
+    menuReusePrompt: [
+      "[data-context-menu='true'] button[aria-label='Reuse Prompt']",
+      "[role='menu'] button[aria-label='Reuse Prompt']"
+    ],
+    menuMashup: [
+      "[data-context-menu='true'] button[aria-label='Mashup']",
+      "[role='menu'] button[aria-label='Mashup']"
+    ],
+    menuSample: [
+      "[data-context-menu='true'] button[aria-label='Sample this song']",
+      "[role='menu'] button[aria-label='Sample this song']"
+    ],
+    menuInspiration: [
+      "[data-context-menu='true'] button[aria-label='Use as Inspiration']",
+      "[role='menu'] button[aria-label='Use as Inspiration']"
+    ],
 
     processingMarker: [{ text: "Processing" }, { text: "Generating" }]
   };
@@ -263,6 +280,47 @@
     return null;
   }
 
+  /**
+   * Find the "Cover" item inside a *visible* context-menu portal.
+   *
+   * Important: never resolve this with a document-global aria-label match. In
+   * cover mode the create panel renders a button with aria-label
+   * "Change condition type from Cover", which a global `[aria-label*='Cover' i]`
+   * lookup matches first (the panel precedes the portal in DOM order) — clicking
+   * it leaves the previously loaded audio in place.
+   */
+  function findMenuCover() {
+    const menus = Array.from(
+      document.querySelectorAll("[data-context-menu='true'], [role='menu']")
+    ).filter(isVisible);
+    for (const rootEl of menus) {
+      const exact = rootEl.querySelector("button[aria-label='Cover']");
+      if (exact && isVisible(exact)) return exact;
+      for (const n of rootEl.querySelectorAll("button,[role='menuitem']")) {
+        if (!isVisible(n)) continue;
+        const aria = (n.getAttribute("aria-label") || "").trim().toLowerCase();
+        const text = (n.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (aria === "cover" || text === "cover") return n;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Text of the create panel's loaded-source chip. Suno renders it as
+   * "Audio<ConditionType>" immediately followed by the source title, e.g.
+   * "AudioCover26-9 06-iiiN artjam - truKKKK00:00/04:47". Returns null when the
+   * panel isn't in a cover/audio state (so callers can skip verification).
+   */
+  function loadedCoverText() {
+    for (const el of document.querySelectorAll("div,span")) {
+      if (el.children.length > 4) continue;
+      const t = (el.textContent || "").trim();
+      if (/^Audio\s*Cover/i.test(t) && isVisible(el)) return t;
+    }
+    return null;
+  }
+
   function waitFor(getter, opts) {
     const options = opts || {};
     const timeout = options.timeout || 15000;
@@ -416,6 +474,8 @@
     findClipRow: findClipRow,
     findWorkspaceTrigger: findWorkspaceTrigger,
     findWorkspaceOption: findWorkspaceOption,
+    findMenuCover: findMenuCover,
+    loadedCoverText: loadedCoverText,
     isVisible: isVisible,
     waitFor: waitFor,
     waitForKey: waitForKey,

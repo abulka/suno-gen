@@ -90,12 +90,21 @@ node tools/test-flow.js ... --batch=yes    # runs a 2-preset batch via runBatch
   single-clip option.
 - **Covers inherit the source's workspace by default.** Always set the workspace
   explicitly and verify the "Save to..." pill changed.
+- **Covers keep the previously loaded audio if the Cover menu item isn't
+  actually clicked.** The create panel renders a `"Change condition type from
+  Cover"` button that a global `[aria-label*="Cover" i]` query matches *before*
+  the menu portal. Always resolve the Cover item via `S.findMenuCover()`
+  (scoped to a visible `[data-context-menu='true']`/`[role='menu']`), and
+  `verifyLoadedSource()` confirms the chip before Create. There is no model
+  selection (default model is always used).
 - **Async form population**: after the cover loads, Suno fills style/title from
   the source. Wait for that to settle (`waitForCoverData`), then write our values
   and verify; otherwise Suno overwrites them.
-- **List virtualization**: after a submission the source row can drop out of the
-  DOM. `ensureSourceRow` re-navigates to the Library (client-side) and uses the
-  clip search before retrying.
+- **List virtualization / wrong page**: the batch runs on the active tab, which
+  may be a create/workspace view whose list is empty or unrelated. `ensureSourceRow`
+  navigates to the Library (`/me`) and searches; it waits for the route + search
+  box, not just `.clip-row` (create pages have rows too, so that wait resolves
+  before navigation and then searches the wrong DOM).
 - Another extension ("Suno Manager V3") injects `data-sm-*` attributes,
   `data-testid="clip-row"`, and shortcut buttons. Do NOT depend on those; key off
   native `.clip-row[role=group]` and `aria-label`s.
@@ -131,9 +140,6 @@ tools/                        Playwright harness (dev only)
 
 ## Known limitations / next steps
 
-- **Model selection is best-effort** (`selectModel`): the model dropdown menu was
-  not reliably mapped. Default model is used unless a preset sets one; verify the
-  menu items before trusting it.
 - No "pre-flight" workspace resolution pass before job 1 (per-job verify exists).
 - Monitoring polls visible rows only; scroll away and it stops waiting (submit is
   unaffected).

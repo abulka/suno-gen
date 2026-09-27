@@ -27,7 +27,7 @@
 
   /** Hover/click each submenu trigger in the open clip menu until Cover shows. */
   async function revealCoverMenuItem() {
-    if (S.find("menuCover")) return true;
+    if (S.findMenuCover()) return true;
     const menus = Array.from(
       document.querySelectorAll("[data-context-menu='true'], [role='menu']")
     ).filter(isVisible);
@@ -43,43 +43,84 @@
     for (const trigger of triggers) {
       S.hoverEl(trigger);
       await sleep(450);
-      if (S.find("menuCover")) return true;
+      if (S.findMenuCover()) return true;
       try {
         S.clickEl(trigger);
       } catch (err) {
         /* ignore */
       }
       await sleep(450);
-      if (S.find("menuCover")) return true;
+      if (S.findMenuCover()) return true;
     }
     return false;
   }
 
+  /** Type into the clip search (full title, then prefixes) until the row shows. */
+  async function searchForClipRow(search, wanted) {
+    S.setNativeValue(search, "");
+    await sleep(250);
+    const queries = [wanted];
+    for (const len of [32, 20, 10]) {
+      if (wanted.length > len) queries.push(wanted.slice(0, len));
+    }
+    for (const q of queries) {
+      S.setNativeValue(search, q);
+      await sleep(350);
+      const row = await S.waitFor(() => S.findClipRow(wanted) || S.findClipRow(q), {
+        timeout: 6000,
+        interval: 300
+      }).catch(() => null);
+      if (row) return row;
+    }
+    return null;
+  }
+
   /**
-   * Make sure the source row is present in the DOM. After a submission the
-   * library list re-renders and virtualizes, so the source can drop out; fall
-   * back to filtering the clip search to bring it back.
+   * Make sure the source row is present in the DOM. The active tab can be on a
+   * create/workspace view with an unrelated or empty clip list, and after a
+   * submission the list re-renders/virtualizes; navigate to the Library and
+   * filter the clip search to bring the source back.
    */
   async function ensureSourceRow(title) {
     let row = S.findClipRow(title);
     if (row) return row;
 
+    const wanted = String(title).trim();
+    const onLibrary = () => /^\/me(\/|$)/.test(location.pathname);
+
     // After a submission Suno re-renders/virtualizes the list; go back to the
     // Library (client-side route, no reload) so the source is queryable again.
+    // NB: don't wait on `.clip-row` alone — the create page has rows too, so it
+    // would resolve before the navigation actually happens.
     const lib = S.find("libraryTab");
     if (lib && S.isVisible(lib)) {
-      S.clickEl(lib);
-      await sleep(1200);
-      row = S.findClipRow(title);
+      if (!onLibrary()) {
+        S.clickEl(lib);
+        await S.waitFor(() => (onLibrary() ? true : null), {
+          timeout: 10000,
+          interval: 200
+        }).catch(() => null);
+      }
+      const search = await S.waitFor(
+        () => {
+          const el = S.find("clipSearchInput");
+          return el && S.isVisible(el) ? el : null;
+        },
+        { timeout: 8000, interval: 250 }
+      ).catch(() => null);
+      await sleep(400);
+      row = S.findClipRow(wanted);
       if (row) return row;
+      if (search) {
+        row = await searchForClipRow(search, wanted);
+        if (row) return row;
+      }
     }
 
-    const search = S.find("clipSearchInput");
-    if (search && S.isVisible(search)) {
-      S.setNativeValue(search, title);
-      row = await S.waitFor(() => S.findClipRow(title), { timeout: 10000, interval: 300 }).catch(
-        () => null
-      );
+    // No Library tab / route unchanged: still try whatever search box is up.
+    const fallbackSearch = S.find("clipSearchInput");
+    if (fallbackSearch && S.isVisible(fallbackSearch)) {
+      row = await searchForClipRow(fallbackSearch, wanted);
       if (row) return row;
     }
 
@@ -91,7 +132,7 @@
       for (let i = 0; i < 8 && !row; i++) {
         scroller.scrollTop = i === 0 ? 0 : scroller.scrollTop + 800;
         await sleep(500);
-        row = S.findClipRow(title);
+        row = S.findClipRow(wanted);
       }
     }
     return row;
@@ -102,12 +143,10 @@
     if (!source || !source.title) {
       throw new Error("No source track title. Pick a source again.");
     }
-    await S.waitFor(() => document.querySelector(".clip-row, [data-testid='clip-row']"), {
-      timeout: 12000
-    }).catch(() => {
-      throw new Error("No clip rows on screen. Open Library/create list first.");
-    });
 
+    // No pre-check for clip rows here: the active tab may be showing a
+    // workspace/create view. `ensureSourceRow` navigates to the Library and
+    // searches for the source before giving up.
     const row = await ensureSourceRow(source.title);
     if (!row) throw new Error("Could not find a clip row titled '" + source.title + "'.");
 
@@ -117,8 +156,12 @@
 
     S.clickEl(more);
     await S.waitFor(
-      () =>
-        document.querySelector("[data-context-menu='true'], [role='menu'], button[aria-label='Cover']"),
+      () => {
+        const menus = Array.from(
+          document.querySelectorAll("[data-context-menu='true'], [role='menu']")
+        ).filter(isVisible);
+        return menus.length ? true : null;
+      },
       { timeout: 6000 }
     ).catch(() => null);
 
@@ -126,7 +169,11 @@
       throw new Error("Cover menu item did not appear. Record the flow and update selectors.");
     }
 
-    S.clickEl(S.find("menuCover"));
+    const coverItem = S.findMenuCover();
+    if (!coverItem) {
+      throw new Error("Cover menu item vanished before it could be clicked.");
+    }
+    S.clickEl(coverItem);
     await sleep(700);
     await clickKeepCurrentIfPresent();
   }
@@ -264,40 +311,6 @@
     await dismissOverwriteDialog();
   }
 
-  /** Best-effort model selection; silently keeps the current model if unsure. */
-  async function selectModel(model) {
-    if (!model) return;
-    const btn = S.find("modelButton");
-    if (!btn) return;
-    const norm = (s) => String(s).trim().toLowerCase().replace(/[\s_]/g, "");
-    const wanted = norm(model);
-    if (norm(btn.textContent) === wanted) return;
-    S.clickEl(btn);
-    await sleep(500);
-    const match = await S.waitFor(
-      () => {
-        const nodes = document.querySelectorAll(
-          "button,[role='menuitem'],[role='option'],[role='menuitemradio']"
-        );
-        for (const n of nodes) {
-          if (!isVisible(n) || n === btn) continue;
-          const t = norm(n.textContent);
-          if (t && t.length <= 40 && t.startsWith(wanted)) return n;
-        }
-        return null;
-      },
-      { timeout: 2500 }
-    ).catch(() => null);
-    if (match) {
-      S.clickEl(match);
-    } else {
-      document.body.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
-      );
-    }
-    await sleep(300);
-  }
-
   function workspacePillMatches(name) {
     const trigger = S.findWorkspaceTrigger();
     if (!trigger) return false;
@@ -385,12 +398,59 @@
     await sleep(500);
   }
 
+  /** Distinctive, lowercased fragments of a source's title/id for matching. */
+  function sourceTokens(source) {
+    const raw = (source && source.title) || "";
+    const parts = [source && source.clipId, raw].concat(
+      String(raw).split(/[·|\-–,]/)
+    );
+    const seen = new Set();
+    for (const p of parts) {
+      const t = String(p || "").toLowerCase().replace(/\s+/g, " ").trim();
+      if (t.length >= 4) seen.add(t);
+    }
+    return Array.from(seen);
+  }
+
+  /**
+   * Guard against submitting a cover against the WRONG audio. Suno keeps the
+   * previously loaded track if the Cover menu item didn't actually apply, so
+   * confirm the create panel's loaded-source chip references the picked source
+   * before we fill/ Create. Best-effort: if no chip is readable, don't block.
+   */
+  async function verifyLoadedSource(source, timeout) {
+    if (!source || !source.title) return true;
+    const tokens = sourceTokens(source);
+    if (!tokens.length) return true;
+    const matches = () => {
+      const chip = S.loadedCoverText();
+      if (!chip) return null; // unknown yet
+      const low = chip.toLowerCase();
+      return tokens.some((tok) => low.includes(tok)) ? true : false;
+    };
+    const deadline = Date.now() + (timeout || 4000);
+    let sawChip = false;
+    while (Date.now() < deadline) {
+      const r = matches();
+      if (r === true) return true;
+      if (r === false) sawChip = true;
+      await sleep(400);
+    }
+    if (!sawChip) return true;
+    throw new Error(
+      "Loaded cover source does not match the picked source ('" +
+        source.title +
+        "'). Aborting before Create to avoid generating the wrong audio."
+    );
+  }
+
   /** Get Suno into cover mode for `source` and the Advanced form ready. */
   async function ensureCoverContext(source) {
     await openCoverForSource(source);
     await ensureAdvancedMode();
     await S.waitForKey("styleInput", { timeout: 15000 });
     await waitForCoverData();
+    await verifyLoadedSource(source);
     return true;
   }
 
@@ -478,7 +538,6 @@
       try {
         // Re-attach the cover each time; Create may reset the form.
         await ensureCoverContext(config.source);
-        await selectModel(preset.model || settings.defaultModel);
         await fillStyle(preset.stylePrompt);
         await fillTitle(job.title);
         await fillLyrics(preset.lyrics || settings.lyricsText || "[instrumental]");
@@ -518,10 +577,10 @@
       revealCoverMenuItem: revealCoverMenuItem,
       ensureAdvancedMode: ensureAdvancedMode,
       ensureCoverContext: ensureCoverContext,
+      verifyLoadedSource: verifyLoadedSource,
       fillStyle: fillStyle,
       fillTitle: fillTitle,
       fillLyrics: fillLyrics,
-      selectModel: selectModel,
       selectWorkspace: selectWorkspace,
       clickCreate: clickCreate,
       monitorJobs: monitorJobs

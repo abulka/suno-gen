@@ -357,7 +357,6 @@
     $("p-name").value = preset ? preset.name : "";
     $("p-code").value = preset ? preset.styleCode : "";
     $("p-style").value = preset ? preset.stylePrompt : "";
-    $("p-model").value = preset ? preset.model || "" : "";
     $("p-workspace").value = preset ? preset.workspaceOverride || "" : "";
     $("p-lyrics").value = preset ? preset.lyrics || "" : "";
     $("editor-card").hidden = false;
@@ -374,7 +373,6 @@
       name: $("p-name").value.trim(),
       styleCode: $("p-code").value.trim().replace(/\s+/g, "").slice(0, 8),
       stylePrompt: $("p-style").value,
-      model: $("p-model").value.trim(),
       lyrics: $("p-lyrics").value,
       workspaceOverride: $("p-workspace").value.trim()
     };
@@ -483,13 +481,15 @@
 
     $("diagnose").addEventListener("click", () => runDiagnose());
 
-    $("copy-log").addEventListener("click", async () => {
+    const copyLog = async () => {
       const text =
         $("log").innerText +
         (diagnosticsBlob ? "\n\n=== DIAGNOSTICS ===\n" + diagnosticsBlob : "");
       const ok = await copyText(text);
       logLine(ok ? "Log copied to clipboard." : "Clipboard blocked.", ok ? "ok" : "err");
-    });
+    };
+    $("copy-log").addEventListener("click", copyLog);
+    $("copy-log-top").addEventListener("click", copyLog);
 
     $("copy-diag").addEventListener("click", async () => {
       if (!diagnosticsBlob) {

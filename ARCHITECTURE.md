@@ -13,9 +13,9 @@ Song idea: name/date/take/rating/workspace ─┤
 Style presets (code + style prompt + overrides) ─┤
                                                   ▼
         [ Batch engine ]  for each preset:
-          ensure cover context → Advanced mode
+          ensure cover context (source verified) → Advanced mode
           → style → title → lyrics([instrumental])
-          → model (best-effort) → workspace (verified)
+          → workspace (verified)
           → Create song
         → monitor all job titles to completion
 ```
@@ -50,8 +50,8 @@ Files: `src/panel/*`, `src/content/*`, `src/inject/page-hook.js`,
 ## Data model (`chrome.storage.local`)
 
 ```js
-settings = { defaultModel, delayMs, maxConcurrent, rating, autoDeriveWorkspace }
-preset   = { id, name, styleCode, stylePrompt, model, lyrics, workspaceOverride, selected }
+settings = { delayMs, maxConcurrent, rating, autoDeriveWorkspace }
+preset   = { id, name, styleCode, stylePrompt, lyrics, workspaceOverride, selected }
 lastBatch= { batch: { songName, date, take, rating, workspace, autoWorkspace },
              source: { clipId, title, url, status } }
 job      = { presetId, presetName, styleCode, title, workspace, workspaceIsOverride }
@@ -112,22 +112,33 @@ functions in `selectors.js` rather than fragile CSS.
 
 Per job (`runBatch` → `ensureCoverContext` → fill → create):
 
-1. `ensureSourceRow(title)` — find `.clip-row[aria-label=title]`; if absent,
-   SPA-click the Library tab and use the clip search (`[aria-label="Search clips"]`).
+1. `ensureSourceRow(title)` — find `.clip-row[aria-label=title]`; if absent, SPA-click
+   the Library tab, **wait for the `/me` route and the clip search to exist**
+   (don't wait on `.clip-row` — create pages have rows too, so that resolves
+   before navigation), then filter the clip search (full title, then prefixes).
 2. Click the row's `[aria-label="More options"]`.
 3. `revealCoverMenuItem()` — hover/click each `button[data-context-menu-trigger]`
-   in the open portal until `button[aria-label="Cover"]` appears (currently `Remix`).
-4. Click Cover; click `Keep Current` if the confirm dialog appears.
+   in the open portal until the Cover item appears (currently under `Remix`).
+   The lookup is **scoped to a visible menu portal** (`S.findMenuCover()`): a
+   global `[aria-label*="Cover" i]` query also matches the create panel's
+   `"Change condition type from Cover"` button and would click the wrong thing.
+4. Click Cover; click `Keep Current` if the confirm dialog appears (that dialog
+   is about preserving lyrics/styles, not the audio — we overwrite lyrics with
+   `[instrumental]` anyway).
 5. `ensureAdvancedMode()` (click the `Advanced` tab if needed).
 6. `waitForCoverData()` — wait until style/title are populated (Suno fills from
    the source asynchronously; writing too early gets overwritten).
-7. `selectModel` (best-effort), `fillStyle`, `fillTitle`, `fillLyrics`
-   (`[instrumental]` via Lexical insertText + retry), `selectWorkspace`.
-8. `selectWorkspace(name)` — open picker, type name, click `"<name> (N clips)"`
+7. `verifyLoadedSource(source)` — confirm the create panel's loaded-source chip
+   (`AudioCover<title>…`) references the picked source. If it clearly doesn't,
+   **throw before Create** so a cover can't be generated from stale audio. Skips
+   silently when no chip is readable.
+8. `fillStyle`, `fillTitle`, `fillLyrics` (`[instrumental]` via Lexical
+   insertText + retry), `selectWorkspace`.
+9. `selectWorkspace(name)` — open picker, type name, click `"<name> (N clips)"`
    or `[aria-label="Create new workspace"]`, then **verify the pill text**;
    throw (stop before spending credits) if it didn't change.
-9. `clickCreate()` → `button[aria-label="Create song"]`.
-10. After all jobs, `monitorJobs()` polls `.clip-row[data-clip-status]` for the job
+10. `clickCreate()` → `button[aria-label="Create song"]`.
+11. After all jobs, `monitorJobs()` polls `.clip-row[data-clip-status]` for the job
     titles and emits `queued → streaming → complete`.
 
 ## Confirmed Suno DOM reference (Sep 2026)
@@ -135,7 +146,8 @@ Per job (`runBatch` → `ensureCoverContext` → fill → create):
 | Thing | Selector / fact |
 |-------|-----------------|
 | Create mode tabs | `button[aria-label="Simple"|"Advanced"|"Sounds"]` |
-| Model button | `button` with text `/^v\d/` (menu unmapped — best-effort) |
+| Condition type | `button[aria-label="Change condition type from Cover"]` (create panel; NOT the menu item) |
+| Loaded source chip | create panel text `AudioCover<title>…` (`S.loadedCoverText()`) |
 | Style prompt | `[data-testid="create-form-styles-wrapper"] textarea` (maxlength 1000) |
 | Song title | `input[placeholder="Song Title (Optional)"]` |
 | Lyrics editor | `div[contenteditable="true"][aria-label="Lyrics editor"]` (Lexical) |
@@ -186,6 +198,9 @@ Per job (`runBatch` → `ensureCoverContext` → fill → create):
 - DOM/UI changes → centralized selector map + `Diagnose`; patch one file.
 - Wrong workspace (covers inherit the source's) → explicit selection + pill
   verification + hard stop.
+- Wrong audio (covers keep the previously loaded track if the Cover menu item
+  didn't apply) → menu lookup scoped to the visible portal + loaded-source chip
+  verification + hard stop before Create.
 - Credits/rate limits → conservative defaults, `dryRun`, delays, verified
   workspace before Create.
 - ToS/anti-automation → UI-level, human-paced, personal use only.
