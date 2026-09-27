@@ -68,31 +68,50 @@
 
   const FS_DB = "sunogen-fs";
   const FS_STORE = "handles";
+  const FS_INDEX = "scanIndex";
+  const READ_HEAD = 64 * 1024;
+  const READ_TAIL = 64 * 1024;
+  const MP3_TAG_CAP = 256 * 1024;
+  const MAX_FILES = 20000;
+  const MAX_DEPTH = 12;
+  const SCAN_CONCURRENCY = 6;
+
+  let scanState = null;
+
+  let fsDbPromise = null;
 
   function idbOpen() {
+    if (!fsDbPromise) {
+      fsDbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(FS_DB, 2);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(FS_STORE)) db.createObjectStore(FS_STORE);
+          if (!db.objectStoreNames.contains(FS_INDEX)) db.createObjectStore(FS_INDEX);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => {
+          fsDbPromise = null;
+          reject(req.error);
+        };
+      });
+    }
+    return fsDbPromise;
+  }
+
+  async function idbGet(store, key) {
+    const db = await idbOpen();
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(FS_DB, 1);
-      req.onupgradeneeded = () => {
-        if (!req.result.objectStoreNames.contains(FS_STORE)) req.result.createObjectStore(FS_STORE);
-      };
+      const req = db.transaction(store, "readonly").objectStore(store).get(key);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
   }
 
-  async function idbGet(key) {
+  async function idbSet(store, key, value) {
     const db = await idbOpen();
     return new Promise((resolve, reject) => {
-      const req = db.transaction(FS_STORE, "readonly").objectStore(FS_STORE).get(key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  }
-
-  async function idbSet(key, value) {
-    const db = await idbOpen();
-    return new Promise((resolve, reject) => {
-      const req = db.transaction(FS_STORE, "readwrite").objectStore(FS_STORE).put(value, key);
+      const req = db.transaction(store, "readwrite").objectStore(store).put(value, key);
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
@@ -103,23 +122,133 @@
     if (el) el.textContent = text || "";
   }
 
-  async function walkDir(handle, prefix, depth, onFile, state) {
-    if (depth > 6 || state.files > 4000) return;
-    for await (const entry of handle.values()) {
-      if (state.files > 4000) return;
-      const path = prefix ? prefix + "/" + entry.name : entry.name;
-      if (entry.kind === "directory") {
-        await walkDir(entry, path, depth + 1, onFile, state);
-      } else {
-        state.files++;
-        await onFile(entry, path);
+  function setScanning(on) {
+    const scanBtn = $("dl-scan");
+    const cancelBtn = $("dl-cancel");
+    const folderBtn = $("dl-folder");
+    const rebuildBtn = $("dl-rebuild");
+    if (scanBtn) scanBtn.disabled = on;
+    if (folderBtn) folderBtn.disabled = on;
+    if (rebuildBtn) rebuildBtn.disabled = on;
+    if (cancelBtn) cancelBtn.hidden = !on;
+  }
+
+  async function loadScanRecord() {
+    const rec = await idbGet(FS_INDEX, "downloadFolder");
+    return {
+      rootName: (rec && rec.rootName) || null,
+      files: (rec && rec.files) || {}
+    };
+  }
+
+  async function saveScanIndex(rootName, files) {
+    await idbSet(FS_INDEX, "downloadFolder", {
+      rootName: rootName || null,
+      files: files,
+      updatedAt: Date.now()
+    });
+  }
+
+  async function clearScanIndex() {
+    await idbSet(FS_INDEX, "downloadFolder", { rootName: null, files: {}, updatedAt: Date.now() });
+  }
+
+  /** Drop authoritative on-disk facts (used when the granted folder changes). */
+  async function dropDiskFacts() {
+    const store = await chrome.storage.local.get("downloadedClips");
+    const current = store.downloadedClips || {};
+    let changed = false;
+    for (const id of Object.keys(current)) {
+      if (current[id].disk) {
+        delete current[id].disk;
+        if (!current[id].history) delete current[id];
+        changed = true;
       }
     }
+    if (changed) await chrome.storage.local.set({ downloadedClips: current });
+  }
+
+  async function loadTitleMap() {
+    const store = await chrome.storage.local.get("clipTitles");
+    const map = new Map();
+    for (const [id, title] of Object.entries(store.clipTitles || {})) {
+      if (title) map.set(String(title).trim().toLowerCase(), id);
+    }
+    return map;
+  }
+
+  /** Enumerate audio files under the granted folder (metadata only). */
+  async function collectFiles(handle, state) {
+    const Meta = globalThis.SunoGenAudioMeta;
+    const files = [];
+    let count = 0;
+    let truncated = false;
+    async function walk(dir, prefix, depth) {
+      if (state.cancelled || depth > MAX_DEPTH) return;
+      for await (const entry of dir.values()) {
+        if (state.cancelled) return;
+        const path = prefix ? prefix + "/" + entry.name : entry.name;
+        if (entry.kind === "directory") {
+          await walk(entry, path, depth + 1);
+        } else {
+          count++;
+          if (count > MAX_FILES) {
+            truncated = true;
+            return;
+          }
+          if (Meta.AUDIO_EXT.test(entry.name)) files.push({ entry: entry, path: path });
+        }
+      }
+    }
+    await walk(handle, handle.name, 0);
+    return { files: files, truncated: truncated };
+  }
+
+  /**
+   * Read only what is needed to find the clip id: 16 bytes to sniff the
+   * container, then the head (ID3 tag if MP3, else 64 KB), with a tail read
+   * only as a fallback.
+   */
+  async function readHeadTail(file, known) {
+    const Meta = globalThis.SunoGenAudioMeta;
+    const size = file.size;
+    const sniff = new Uint8Array(await file.slice(0, Math.min(16, size)).arrayBuffer());
+    let headLen = READ_HEAD;
+    const tag = Meta.id3TagSize(sniff);
+    if (tag > 0) headLen = Math.min(tag + 10, MP3_TAG_CAP);
+    const head = new Uint8Array(await file.slice(0, Math.min(headLen, size)).arrayBuffer());
+    const headText = Meta.decode(head);
+    let id = Meta.idFromText(headText, known);
+    if (id) return id;
+    const tailStart = Math.max(0, size - READ_TAIL);
+    if (tailStart > head.length) {
+      const tail = new Uint8Array(await file.slice(tailStart).arrayBuffer());
+      id = Meta.idFromText(headText + "\n" + Meta.decode(tail), known);
+    }
+    return id || null;
+  }
+
+  async function runPool(items, worker, concurrency, state) {
+    let next = 0;
+    const runners = [];
+    for (let k = 0; k < concurrency; k++) {
+      runners.push(
+        (async () => {
+          while (next < items.length) {
+            if (state.cancelled) return;
+            const i = next++;
+            await worker(items[i]);
+          }
+        })()
+      );
+    }
+    await Promise.all(runners);
   }
 
   async function scanDownloadFolder() {
     const Meta = globalThis.SunoGenAudioMeta;
-    const handle = await idbGet("downloadFolder");
+    if (scanState) return;
+    const handle = await idbGet(FS_STORE, "downloadFolder");
     if (!handle) {
       logLine("No download folder connected.", "err");
       setFolderStatus("not connected");
@@ -137,70 +266,123 @@
       return;
     }
 
+    const state = { cancelled: false };
+    scanState = state;
+    setScanning(true);
     setFolderStatus("scanning…");
-    const store = await chrome.storage.local.get(["clipTitles", "downloadedClips"]);
-    const known = new Set([
-      ...Object.keys(store.clipTitles || {}),
-      ...Object.keys(store.downloadedClips || {})
-    ]);
-    const found = new Map();
-    let scanned = 0;
-    const state = { files: 0 };
-    const sliceLen = 512 * 1024;
 
-    await walkDir(
-      handle,
-      handle.name,
-      0,
-      async (entry, path) => {
-        if (!Meta.AUDIO_EXT.test(entry.name)) return;
-        try {
-          const file = await entry.getFile();
-          const head = new Uint8Array(await file.slice(0, sliceLen).arrayBuffer());
-          const tailStart = Math.max(0, file.size - sliceLen);
-          const tail = new Uint8Array(await file.slice(tailStart).arrayBuffer());
-          const text = Meta.decode(head) + "\n" + Meta.decode(tail);
-          const id = Meta.idFromText(text, known);
-          scanned++;
-          if (id) {
-            known.add(id);
-            const hit = found.get(id);
-            if (hit) hit.count++;
-            else found.set(id, { path: path, count: 1 });
+    try {
+      const titleMap = await loadTitleMap();
+      const rec = await loadScanRecord();
+      const index = new Map(Object.entries(rec.files));
+      const store = await chrome.storage.local.get(["clipTitles", "downloadedClips"]);
+      const known = new Set([
+        ...Object.keys(store.clipTitles || {}),
+        ...Object.keys(store.downloadedClips || {})
+      ]);
+
+      const { files, truncated } = await collectFiles(handle, state);
+      const found = new Map();
+      let processed = 0;
+      let readCount = 0;
+      let reusedCount = 0;
+      const total = files.length;
+
+      await runPool(
+        files,
+        async (item) => {
+          if (state.cancelled) return;
+          try {
+            const file = await item.entry.getFile();
+            const size = file.size;
+            const mtime = file.lastModified;
+            const prev = index.get(item.path);
+            const cached = prev && prev.size === size && prev.mtime === mtime;
+            let id = cached ? prev.id : null;
+            if (id) {
+              reusedCount++;
+            } else {
+              id = Meta.matchTitle(titleMap, Meta.stemOf(item.path));
+              if (id) {
+                reusedCount++;
+              } else if (cached) {
+                reusedCount++;
+              } else {
+                readCount++;
+                id = await readHeadTail(file, known);
+              }
+              index.set(item.path, { size: size, mtime: mtime, id: id || null });
+            }
+            if (id) {
+              known.add(id);
+              const hit = found.get(id);
+              if (hit) hit.count++;
+              else found.set(id, { path: item.path, count: 1 });
+            }
+          } catch (err) {
+            /* skip unreadable file */
           }
-        } catch (err) {
-          /* skip unreadable file */
+          processed++;
+          if (processed % 40 === 0 || processed === total) {
+            setFolderStatus(
+              "scanning " + processed + "/" + total + " · " + readCount + " read · matched " + found.size
+            );
+          }
+        },
+        SCAN_CONCURRENCY,
+        state
+      );
+
+      if (state.cancelled) {
+        setFolderStatus("cancelled");
+        logLine("Folder scan cancelled.");
+        return;
+      }
+
+      const present = new Set(files.map((f) => f.path));
+      for (const path of Array.from(index.keys())) if (!present.has(path)) index.delete(path);
+      await saveScanIndex(handle.name, Object.fromEntries(index));
+
+      // The folder scan is authoritative for "on disk": drop disk facts whose
+      // file is gone, but leave Chrome-history facts untouched.
+      const after = await chrome.storage.local.get("downloadedClips");
+      const current = after.downloadedClips || {};
+      let changed = false;
+      for (const id of Object.keys(current)) {
+        if (current[id].disk && !found.has(id)) {
+          delete current[id].disk;
+          if (!current[id].history) delete current[id];
+          changed = true;
         }
-      },
-      state
-    );
-
-    // The folder scan is authoritative for "on disk": drop disk facts whose file
-    // is gone, but leave Chrome-history facts untouched.
-    const after = await chrome.storage.local.get("downloadedClips");
-    const current = after.downloadedClips || {};
-    let changed = false;
-    for (const id of Object.keys(current)) {
-      if (current[id].disk && !found.has(id)) {
-        delete current[id].disk;
-        if (!current[id].history) delete current[id];
-        changed = true;
       }
-    }
-    for (const [id, hit] of found) {
-      const entry = current[id] || {};
-      const prev = entry.disk;
-      if (!prev || prev.path !== hit.path || prev.count !== hit.count) {
-        entry.disk = { at: Date.now(), path: hit.path, count: hit.count };
-        current[id] = entry;
-        changed = true;
+      for (const [id, hit] of found) {
+        const entry = current[id] || {};
+        const prev = entry.disk;
+        if (!prev || prev.path !== hit.path || prev.count !== hit.count) {
+          entry.disk = { at: Date.now(), path: hit.path, count: hit.count };
+          current[id] = entry;
+          changed = true;
+        }
       }
-    }
-    if (changed) await chrome.storage.local.set({ downloadedClips: current });
+      if (changed) await chrome.storage.local.set({ downloadedClips: current });
 
-    const summary = "scanned " + scanned + ", matched " + found.size;
-    setFolderStatus(summary);
-    logLine("Folder scan: " + summary + " clip(s).", "ok");
+      const summary =
+        "scanned " + total + " · " + readCount + " read · " + reusedCount + " reused · matched " +
+        found.size + " clip(s)" + (truncated ? " (file cap hit)" : "");
+      setFolderStatus(summary);
+      logLine("Folder scan: " + summary, "ok");
+    } finally {
+      scanState = null;
+      setScanning(false);
+    }
+  }
+
+  async function rebuildDownloadIndex() {
+    if (scanState) return;
+    await clearScanIndex();
+    logLine("Rebuilding folder index…");
+    setFolderStatus("rebuilding…");
+    await scanDownloadFolder();
   }
 
   async function connectDownloadFolder() {
@@ -210,7 +392,13 @@
     }
     try {
       const handle = await window.showDirectoryPicker({ id: "sunogen-downloads", mode: "read" });
-      await idbSet("downloadFolder", handle);
+      const rec = await loadScanRecord();
+      if (rec.rootName && rec.rootName !== handle.name) {
+        // A genuinely different folder invalidates both the id cache and disk facts.
+        await clearScanIndex();
+        await dropDiskFacts();
+      }
+      await idbSet(FS_STORE, "downloadFolder", handle);
       $("dl-folder").textContent = "Reconnect download folder";
       setFolderStatus("connected");
       await scanDownloadFolder();
@@ -223,7 +411,7 @@
 
   async function refreshFolderStatus() {
     try {
-      const handle = await idbGet("downloadFolder");
+      const handle = await idbGet(FS_STORE, "downloadFolder");
       if (!handle) return;
       $("dl-folder").textContent = "Reconnect download folder";
       const perm = await handle.queryPermission({ mode: "read" });
@@ -882,6 +1070,10 @@
 
     $("dl-folder").addEventListener("click", () => connectDownloadFolder());
     $("dl-scan").addEventListener("click", () => scanDownloadFolder());
+    $("dl-rebuild").addEventListener("click", () => rebuildDownloadIndex());
+    $("dl-cancel").addEventListener("click", () => {
+      if (scanState) scanState.cancelled = true;
+    });
 
     const copyLog = async () => {
       const text =

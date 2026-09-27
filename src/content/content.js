@@ -166,6 +166,10 @@
   }
 
   // Relay generation-status events from the MAIN-world hook (install once).
+  // Also stash the latest download metadata on globalThis: content scripts are
+  // re-injected whenever the panel opens, which would otherwise wipe a fresh
+  // row-indicators instance's in-memory copy and drop the unlock badges.
+  if (!globalThis.__sunogenClipMeta) globalThis.__sunogenClipMeta = new Map();
   if (!globalThis.__sunogenPageHooksInstalled) {
     globalThis.__sunogenPageHooksInstalled = true;
     window.addEventListener("message", (ev) => {
@@ -173,9 +177,19 @@
       const data = ev.data;
       if (!data || data.source !== "sunogen-page") return;
       emit({ event: "page", payload: data.payload });
-      // Feed the service worker the clip title -> id map so downloads started
-      // via blob: URLs (whose UUID is random) can still be matched by filename.
       if (data.payload && data.payload.event === "clip-meta" && Array.isArray(data.payload.items)) {
+        for (const item of data.payload.items) {
+          if (item && item.id) globalThis.__sunogenClipMeta.set(item.id, item);
+        }
+        try {
+          document.dispatchEvent(
+            new CustomEvent("sunogen:clip-meta", { detail: { items: data.payload.items } })
+          );
+        } catch (err) {
+          /* ignore */
+        }
+        // Feed the service worker the clip title -> id map so downloads started
+        // via blob: URLs (whose UUID is random) can still be matched by filename.
         try {
           chrome.runtime.sendMessage({ type: "SUNOGEN_CLIP_TITLES", items: data.payload.items });
         } catch (err) {

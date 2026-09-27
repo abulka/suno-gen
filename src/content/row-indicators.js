@@ -196,24 +196,41 @@
     }, 300);
   }
 
+  function storeMetaItem(item) {
+    if (!item || !item.id) return;
+    meta.set(item.id, {
+      title: item.title,
+      unlocked: !!item.unlocked,
+      known: item.known !== false,
+      hasStem: !!item.hasStem,
+      upload: !!item.upload
+    });
+  }
+
+  function applyClipMeta(items) {
+    if (!Array.isArray(items)) return;
+    items.forEach(storeMetaItem);
+    scheduleScan();
+  }
+
+  /** content.js keeps the latest metadata on globalThis across re-injections. */
+  function seedFromGlobal() {
+    const stored = globalThis.__sunogenClipMeta;
+    if (stored && typeof stored.forEach === "function") stored.forEach(storeMetaItem);
+  }
+
   function onWindowMessage(ev) {
     if (ev.source !== window) return;
     const data = ev.data;
     if (!data || data.source !== "sunogen-page" || !data.payload) return;
     const payload = data.payload;
     if (payload.event === "clip-meta" && Array.isArray(payload.items)) {
-      for (const item of payload.items) {
-        if (!item || !item.id) continue;
-        meta.set(item.id, {
-          title: item.title,
-          unlocked: !!item.unlocked,
-          known: item.known !== false,
-          hasStem: !!item.hasStem,
-          upload: !!item.upload
-        });
-      }
-      scheduleScan();
+      applyClipMeta(payload.items);
     }
+  }
+
+  function onClipMetaEvent(ev) {
+    if (ev && ev.detail && Array.isArray(ev.detail.items)) applyClipMeta(ev.detail.items);
   }
 
   function onStorageChanged(changes, area) {
@@ -239,7 +256,9 @@
   const observer = new MutationObserver(() => scheduleScan());
 
   async function init() {
+    seedFromGlobal();
     window.addEventListener("message", onWindowMessage);
+    document.addEventListener("sunogen:clip-meta", onClipMetaEvent);
     chrome.storage.onChanged.addListener(onStorageChanged);
     observer.observe(document.documentElement, { childList: true, subtree: true });
     try {
@@ -256,6 +275,7 @@
   function destroy() {
     stopped = true;
     window.removeEventListener("message", onWindowMessage);
+    document.removeEventListener("sunogen:clip-meta", onClipMetaEvent);
     try {
       chrome.storage.onChanged.removeListener(onStorageChanged);
     } catch (err) {

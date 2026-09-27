@@ -34,6 +34,46 @@
     return Array.from(new Set(found.map((u) => u.toLowerCase())));
   }
 
+  /** Normalise a filename to a title-like stem for clipTitles matching. */
+  function stemOf(name) {
+    return String(name || "")
+      .replace(/^.*[\\/]/, "")
+      .replace(/\.(mp3|wav|m4a|mp4|flac|ogg|aac|opus)$/i, "")
+      .replace(/\s*\(\d+\)$/, "")
+      .trim()
+      .toLowerCase();
+  }
+
+  /**
+   * Match a filename stem against a title -> id map. Tolerates a leading
+   * "artist - " prefix added by other extensions.
+   */
+  function matchTitle(titleToId, stem) {
+    if (!stem || !titleToId) return null;
+    if (typeof titleToId.get === "function" && titleToId.has(stem)) return titleToId.get(stem);
+    for (const [title, id] of titleToId) {
+      if (!title || title.length < 6) continue;
+      if (stem === title) return id;
+      if (stem.endsWith(title)) {
+        const prefix = stem.slice(0, stem.length - title.length);
+        if (prefix.endsWith(" - ") || prefix === "- ") return id;
+      }
+    }
+    return null;
+  }
+
+  /** Size of an ID3v2 tag (bytes after the 10-byte header), or 0 if not ID3. */
+  function id3TagSize(bytes) {
+    if (!bytes || bytes.length < 10) return 0;
+    if (bytes[0] !== 0x49 || bytes[1] !== 0x44 || bytes[2] !== 0x33) return 0;
+    return (
+      ((bytes[6] & 0x7f) << 21) |
+      ((bytes[7] & 0x7f) << 14) |
+      ((bytes[8] & 0x7f) << 7) |
+      (bytes[9] & 0x7f)
+    );
+  }
+
   /**
    * Best-effort clip id from the concatenated head+tail text of an audio file.
    * `knownIds` is a Set of ids already known from the feed; when present it is
@@ -62,6 +102,9 @@
     AUDIO_EXT: AUDIO_EXT,
     decode: decode,
     allUuids: allUuids,
+    stemOf: stemOf,
+    matchTitle: matchTitle,
+    id3TagSize: id3TagSize,
     idFromText: idFromText
   };
 })(globalThis);

@@ -151,6 +151,11 @@ node tools/inspect-audio.js --url=<url>    # same, from a URL (streams are encry
   The padlock/seed come from Suno's `clip.is_download_unlocked` + `metadata.type`
   via the page hook; history/disk are local. Each badge has its own toggle in
   panel Tools (`settings.showUnlockBadge`, `showHistoryBadge`, `showDiskBadge`).
+- **Re-injection loses in-memory state**: opening the panel re-injects the
+  content scripts, which recreates `row-indicators.js` (disk/history survive via
+  storage, but `clip-meta` would be lost). `content.js` stashes the latest
+  `clip-meta` on `globalThis.__sunogenClipMeta` and dispatches
+  `sunogen:clip-meta`; `row-indicators.js` re-seeds from it on init.
 - **Local download sources** (`downloadedClips`): `history` from live
   `chrome.downloads` events + a `chrome.downloads.search` backfill (can expire),
   and `disk` from the Tools folder scan (File System Access), which is
@@ -160,7 +165,15 @@ node tools/inspect-audio.js --url=<url>    # same, from a URL (streams are encry
   added by other extensions). Suno files embed the exact id: M4A `©cmt`/WAV
   `ICMT` `"made with suno; ... id=<uuid>"` and a C2PA `com.suno.provenance` /
   `icontentIdx` block (`src/shared/audio-meta.js`). Streams are encrypted; only
-  saved files are readable (`tools/inspect-audio.js`).
+  saved files are readable (`tools/inspect-audio.js`). The folder scan is
+  incremental: filename → title first, then a head slice only (16-byte sniff →
+  ID3 tag size for MP3, else 64 KB; tail only as fallback), and it caches
+  `{size, mtime, id}` per relative path in IndexedDB (`sunogen-fs`/`scanIndex`),
+  so unchanged files are skipped on rescans. The record also stores `rootName`:
+  reconnecting to the same folder keeps the cache, a different folder clears it
+  (and drops disk facts). "Scan folder" reuses the cache; "Rebuild index" clears
+  it and re-resolves everything. The status reports `N read · M reused · K
+  matched`. Runs in the panel with progress + Cancel; caps at 20k files / depth 12.
 
 ## File map
 

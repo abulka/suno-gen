@@ -64,6 +64,12 @@ downloadedClips = { <clipId>: { history?: {at, filename}, disk?: {at, path, coun
 clipTitles      = { <clipId>: <title> }  // feeds filename-based download matching
 ```
 
+The folder-scan cache lives in IndexedDB (`sunogen-fs`/`scanIndex`,
+`{ rootName, files: { <relPath>: {size, mtime, id} } }`) so unchanged files are
+skipped on rescans; reconnecting to the same `rootName` keeps it, a different
+folder clears it, and a "Rebuild index" action clears it on demand. The granted
+`FileSystemDirectoryHandle` is stored in the same DB.
+
 `date` = `YY-M`, `take` = 2-digit, `rating` default `iiiN`, `styleCode` = no
 spaces ≤ 8 chars.
 
