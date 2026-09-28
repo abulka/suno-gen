@@ -153,13 +153,13 @@ node tools/inspect-audio.js --url=<url>    # same, from a URL (streams are encry
   `history` (violet down-arrow — a download was seen in Chrome's history).
   Top-right: `disk` (green tick — a file is on disk, tooltip shows the path).
   The padlock/seed come from Suno's `clip.is_download_unlocked` + `metadata.type`
-  via the page hook; history/disk are local. Each badge has its own toggle in the
-  always-visible **Downloads folder** card at the top of the panel
-  (`settings.showUnlockBadge`, `showHistoryBadge`, `showDiskBadge`). That card
-  also owns Connect/Reconnect/Scan/Rebuild, shows a live permission state pill,
-  a header `disk` status pill, and a warning box when the folder is not connected
-  or its permission lapsed. `lastScan` (time + matched count) is persisted so the
-  state survives reopening the panel.
+  via the page hook; history/disk are local. The always-visible **Downloads
+  folder** card at the top of the panel owns the connection (Connect/Reconnect),
+  shows a live permission state pill, and a warning box when the folder is not
+  connected or its permission lapsed; `lastScan` (time + matched count) is
+  persisted so the state survives reopening the panel. Scan/Rebuild and the three
+  badge toggles live under **Tools → Download sync**
+  (`settings.showUnlockBadge`, `showHistoryBadge`, `showDiskBadge`).
 - **Re-injection loses in-memory state**: opening the panel re-injects the
   content scripts, which recreates `row-indicators.js` (disk/history survive via
   storage, but `clip-meta` would be lost). `content.js` stashes the latest

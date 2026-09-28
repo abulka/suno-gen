@@ -119,12 +119,12 @@
   }
 
   const FOLDER_PILL = {
-    ok: { cls: "pill-ok", card: "connected", header: "disk ok" },
-    busy: { cls: "pill-busy", card: "working", header: "disk …" },
-    warn: { cls: "pill-warn", card: "reconnect", header: "disk !" },
-    off: { cls: "pill-warn", card: "not connected", header: "disk off" },
-    err: { cls: "pill-err", card: "error", header: "disk !" },
-    idle: { cls: "", card: "not checked", header: "disk ?" }
+    ok: { cls: "pill-ok", card: "connected" },
+    busy: { cls: "pill-busy", card: "working" },
+    warn: { cls: "pill-warn", card: "not connected" },
+    off: { cls: "pill-warn", card: "not connected" },
+    err: { cls: "pill-err", card: "error" },
+    idle: { cls: "", card: "not checked" }
   };
   const FOLDER_ALERT = {
     off:
@@ -137,25 +137,19 @@
   };
 
   /**
-   * Drive the folder UI from one place: the card pill, the status line, the
-   * header "disk" pill, and the warning box all reflect the same state. This is
-   * the reified replacement for the old hidden-in-Tools status string.
+   * Drive the folder card from one place: the status pill, the status line, and
+   * the warning box all reflect the same state. This is the reified replacement
+   * for the old hidden-in-Tools status string.
    */
   function setFolderState(kind, text, alertText) {
     const meta = FOLDER_PILL[kind] || FOLDER_PILL.idle;
     const statusEl = $("dl-folder-status");
     const pill = $("dl-status-pill");
-    const header = $("disk-status");
     const warnEl = $("dl-folder-warn");
     if (statusEl) statusEl.textContent = text || "";
     if (pill) {
       pill.textContent = meta.card;
       pill.className = "pill " + meta.cls;
-    }
-    if (header) {
-      header.textContent = meta.header;
-      header.className = "pill " + meta.cls;
-      header.title = text ? "Downloads folder: " + text : "Downloads folder status";
     }
     if (warnEl) {
       const show = kind === "off" || kind === "warn" || kind === "err";
@@ -652,28 +646,23 @@
 
   // ---------- rendering ----------
 
-  function updatePageStatus() {
-    const el = $("page-status");
+  /**
+   * Pings the active Suno tab to re-sync an already-armed Pick mode on boot.
+   * No longer paints a status pill (the topbar is title-only); failures are
+   * just logged to the console.
+   */
+  function syncPageState() {
     getTab()
       .then(async (tab) => {
-        if (!tab) return;
-        if (!isSunoUrl(tab.url)) {
-          el.textContent = "not on suno.com";
-          el.className = "pill pill-warn";
-          return;
-        }
+        if (!tab || !isSunoUrl(tab.url)) return;
         try {
           const res = await sendToContent("SUNOGEN_PING");
-          el.textContent = "connected";
-          el.className = "pill pill-ok";
           if (res && res.pick) {
             pickMode = !!res.pick.active;
             pickMultiple = !!res.pick.multiple;
             updatePickStatus();
           }
         } catch (err) {
-          el.textContent = "no connection";
-          el.className = "pill pill-err";
           console.warn("[SunoGen] ping failed", err);
         }
       })
@@ -1207,14 +1196,6 @@
       if (scanState) scanState.cancelled = true;
     });
 
-    $("disk-status").addEventListener("click", () => {
-      const card = $("downloads-card");
-      if (!card) return;
-      card.scrollIntoView({ behavior: "smooth", block: "start" });
-      card.classList.add("flash");
-      setTimeout(() => card.classList.remove("flash"), 900);
-    });
-
     const copyLog = async () => {
       const text =
         $("log").innerText +
@@ -1223,7 +1204,6 @@
       logLine(ok ? "Log copied to clipboard." : "Clipboard blocked.", ok ? "ok" : "err");
     };
     $("copy-log").addEventListener("click", copyLog);
-    $("copy-log-top").addEventListener("click", copyLog);
 
     $("copy-diag").addEventListener("click", async () => {
       if (!diagnosticsBlob) {
@@ -1364,7 +1344,7 @@
     } catch (err) {
       console.warn("[SunoGen] initial inject skipped", err);
     }
-    updatePageStatus();
+    syncPageState();
     renderDownloadsFolder()
       .then(() => autoScanDownloadFolder())
       .catch(() => {});
