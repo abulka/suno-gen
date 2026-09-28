@@ -109,13 +109,17 @@ Small badges on each clip row show independent facts:
 | Violet down-arrow | A download was seen in **Chrome download history** |
 | Green tick (top-right) | A file is **on disk** (found by the folder scan) |
 
-Each badge has its own checkbox under **Tools**. The on-disk badge's tooltip
-shows the matched file path.
+Each badge has its own checkbox in the **Downloads folder** card at the top of
+the panel. The on-disk badge's tooltip shows the matched file path.
 
 ### Folder scan
 
-Click **Tools → Connect download folder** and grant read access to your Suno
-downloads folder (via the File System Access API). The scan:
+The always-visible **Downloads folder** card (top of the panel) owns the folder
+connection; a matching `disk` pill in the header mirrors its state. Click
+**Connect download folder** and grant read access to your Suno downloads folder
+(via the File System Access API). The card warns when the folder isn't connected
+or its permission has lapsed, and remembers the last scan's time + matched count.
+The scan:
 
 - Matches files to clips by the clip id embedded in the audio metadata (M4A
   `©cmt`, WAV `ICMT`, and the C2PA `com.suno.provenance` / `icontentIdx` block).

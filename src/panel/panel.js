@@ -118,9 +118,58 @@
     });
   }
 
-  function setFolderStatus(text) {
-    const el = $("dl-folder-status");
-    if (el) el.textContent = text || "";
+  const FOLDER_PILL = {
+    ok: { cls: "pill-ok", card: "connected", header: "disk ok" },
+    busy: { cls: "pill-busy", card: "working", header: "disk …" },
+    warn: { cls: "pill-warn", card: "reconnect", header: "disk !" },
+    off: { cls: "pill-warn", card: "not connected", header: "disk off" },
+    err: { cls: "pill-err", card: "error", header: "disk !" },
+    idle: { cls: "", card: "not checked", header: "disk ?" }
+  };
+  const FOLDER_ALERT = {
+    off:
+      "Not connected to your downloads folder — on-disk (green tick) badges can't be determined. " +
+      "Connect a folder to see which clips are already saved.",
+    warn:
+      "Folder access expired — reconnect to restore on-disk (green tick) badges. " +
+      "Your last scan is shown below.",
+    err: "Downloads folder error — on-disk (green tick) badges may be out of date."
+  };
+
+  /**
+   * Drive the folder UI from one place: the card pill, the status line, the
+   * header "disk" pill, and the warning box all reflect the same state. This is
+   * the reified replacement for the old hidden-in-Tools status string.
+   */
+  function setFolderState(kind, text, alertText) {
+    const meta = FOLDER_PILL[kind] || FOLDER_PILL.idle;
+    const statusEl = $("dl-folder-status");
+    const pill = $("dl-status-pill");
+    const header = $("disk-status");
+    const warnEl = $("dl-folder-warn");
+    if (statusEl) statusEl.textContent = text || "";
+    if (pill) {
+      pill.textContent = meta.card;
+      pill.className = "pill " + meta.cls;
+    }
+    if (header) {
+      header.textContent = meta.header;
+      header.className = "pill " + meta.cls;
+      header.title = text ? "Downloads folder: " + text : "Downloads folder status";
+    }
+    if (warnEl) {
+      const show = kind === "off" || kind === "warn" || kind === "err";
+      warnEl.hidden = !show;
+      if (show) warnEl.textContent = alertText || FOLDER_ALERT[kind] || "";
+    }
+  }
+
+  function formatLastScan(rec) {
+    if (!rec || !rec.at) return "";
+    const parts = [];
+    if (rec.matched != null) parts.push("matched " + rec.matched + " clip(s)");
+    if (rec.total != null) parts.push("scanned " + rec.total);
+    return "Last scan " + new Date(rec.at).toLocaleString() + (parts.length ? " · " + parts.join(" · ") : "");
   }
 
   function setScanning(on) {
@@ -252,25 +301,25 @@
     const handle = await idbGet(FS_STORE, "downloadFolder");
     if (!handle) {
       logLine("No download folder connected.", "err");
-      setFolderStatus("not connected");
+      setFolderState("off", "no folder connected");
       return;
     }
     try {
       let perm = await handle.queryPermission({ mode: "read" });
       if (perm !== "granted") perm = await handle.requestPermission({ mode: "read" });
       if (perm !== "granted") {
-        setFolderStatus("permission needed");
+        setFolderState("warn", "permission needed");
         return;
       }
     } catch (err) {
-      setFolderStatus("permission error");
+      setFolderState("err", "permission error");
       return;
     }
 
     const state = { cancelled: false };
     scanState = state;
     setScanning(true);
-    setFolderStatus("scanning…");
+    setFolderState("busy", "scanning…");
 
     try {
       const titleMap = await loadTitleMap();
@@ -325,7 +374,8 @@
           }
           processed++;
           if (processed % 40 === 0 || processed === total) {
-            setFolderStatus(
+            setFolderState(
+              "busy",
               "scanning " + processed + "/" + total + " · " + readCount + " read · matched " + found.size
             );
           }
@@ -335,7 +385,7 @@
       );
 
       if (state.cancelled) {
-        setFolderStatus("cancelled");
+        setFolderState("warn", "cancelled");
         logLine("Folder scan cancelled.");
         return;
       }
@@ -370,8 +420,22 @@
       const summary =
         "scanned " + total + " · " + readCount + " read · " + reusedCount + " reused · matched " +
         found.size + " clip(s)" + (truncated ? " (file cap hit)" : "");
-      setFolderStatus(summary);
+      setFolderState("ok", "Last scan " + new Date().toLocaleString() + " · " + summary);
       logLine("Folder scan: " + summary, "ok");
+      try {
+        await chrome.storage.local.set({
+          lastScan: {
+            at: Date.now(),
+            total: total,
+            read: readCount,
+            reused: reusedCount,
+            matched: found.size,
+            rootName: handle.name
+          }
+        });
+      } catch (err) {
+        /* ignore */
+      }
     } finally {
       scanState = null;
       setScanning(false);
@@ -382,7 +446,7 @@
     if (scanState) return;
     await clearScanIndex();
     logLine("Rebuilding folder index…");
-    setFolderStatus("rebuilding…");
+    setFolderState("busy", "rebuilding…");
     await scanDownloadFolder();
   }
 
@@ -401,7 +465,7 @@
       }
       await idbSet(FS_STORE, "downloadFolder", handle);
       $("dl-folder").textContent = "Reconnect download folder";
-      setFolderStatus("connected");
+      setFolderState("ok", "connected");
       await scanDownloadFolder();
     } catch (err) {
       if (String((err && err.name) || "") !== "AbortError") {
@@ -410,15 +474,45 @@
     }
   }
 
-  async function refreshFolderStatus() {
+  /**
+   * Single source of truth for the folder card on boot: reads the stored handle,
+   * its current permission, and the last persisted scan summary, then paints the
+   * card + header pill. Runs before an auto-scan, so the user always sees the
+   * last known state even if a rescan is skipped or still running.
+   */
+  async function renderDownloadsFolder() {
+    let handle = null;
     try {
-      const handle = await idbGet(FS_STORE, "downloadFolder");
-      if (!handle) return;
-      $("dl-folder").textContent = "Reconnect download folder";
-      const perm = await handle.queryPermission({ mode: "read" });
-      setFolderStatus(perm === "granted" ? "connected" : "needs reconnect");
+      handle = await idbGet(FS_STORE, "downloadFolder");
     } catch (err) {
       /* ignore */
+    }
+    const folderBtn = $("dl-folder");
+    if (folderBtn) {
+      folderBtn.textContent = handle ? "Reconnect download folder" : "Connect download folder";
+    }
+    if (!handle) {
+      setFolderState("off", "no folder connected");
+      return;
+    }
+    let perm = "prompt";
+    try {
+      perm = await handle.queryPermission({ mode: "read" });
+    } catch (err) {
+      /* ignore */
+    }
+    let last = null;
+    try {
+      const store = await chrome.storage.local.get("lastScan");
+      last = store.lastScan || null;
+    } catch (err) {
+      /* ignore */
+    }
+    const summary = formatLastScan(last);
+    if (perm === "granted") {
+      setFolderState("ok", summary || "connected");
+    } else {
+      setFolderState("warn", summary ? "needs reconnect · " + summary : "needs reconnect");
     }
   }
 
@@ -444,7 +538,7 @@
       return;
     }
     if (perm !== "granted") {
-      setFolderStatus("needs reconnect");
+      setFolderState("warn", "needs reconnect");
       return;
     }
     await scanDownloadFolder();
@@ -1113,6 +1207,14 @@
       if (scanState) scanState.cancelled = true;
     });
 
+    $("disk-status").addEventListener("click", () => {
+      const card = $("downloads-card");
+      if (!card) return;
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+      card.classList.add("flash");
+      setTimeout(() => card.classList.remove("flash"), 900);
+    });
+
     const copyLog = async () => {
       const text =
         $("log").innerText +
@@ -1263,8 +1365,9 @@
       console.warn("[SunoGen] initial inject skipped", err);
     }
     updatePageStatus();
-    refreshFolderStatus();
-    autoScanDownloadFolder().catch(() => {});
+    renderDownloadsFolder()
+      .then(() => autoScanDownloadFolder())
+      .catch(() => {});
     if (!state.sources.length) {
       logLine("Pick source song(s), choose presets, then Generate batch.");
     }

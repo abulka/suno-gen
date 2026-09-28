@@ -10,10 +10,31 @@
     <header class="topbar">
       <h1>Suno Generator</h1>
       <button id="copy-log-top" type="button" class="btn btn-sm" title="Copy the Suno Generator log (+ diagnostics) to the clipboard">Copy log</button>
+      <span id="disk-status" class="pill pill-warn" title="Downloads folder status">disk ?</span>
       <span id="page-status" class="pill pill-warn">checking page…</span>
     </header>
 
     <main>
+      <section class="card" id="downloads-card">
+        <div class="card-head">
+          <h2>Downloads folder</h2>
+          <span id="dl-status-pill" class="pill pill-warn">checking…</span>
+        </div>
+        <div id="dl-folder-status" class="folder-status muted"></div>
+        <div id="dl-folder-warn" class="folder-warn" hidden></div>
+        <div class="folder-actions">
+          <button id="dl-folder" type="button" class="btn btn-sm">Connect download folder</button>
+          <button id="dl-scan" type="button" class="btn btn-sm">Scan folder</button>
+          <button id="dl-rebuild" type="button" class="btn btn-sm">Rebuild index</button>
+          <button id="dl-cancel" type="button" class="btn btn-sm" hidden>Cancel</button>
+        </div>
+        <div class="folder-toggles">
+          <label class="inline"><input id="dl-badge-unlock" type="checkbox" /> unlock/upload badge</label>
+          <label class="inline"><input id="dl-badge-history" type="checkbox" /> history badge</label>
+          <label class="inline"><input id="dl-badge-disk" type="checkbox" /> on-disk badge</label>
+        </div>
+      </section>
+
       <section class="card">
         <h2>Batch</h2>
 
@@ -127,18 +148,6 @@
             <button id="diagnose" type="button" class="btn btn-sm">Diagnose</button>
             <button id="record-flow" type="button" class="btn btn-sm">Record flow</button>
             <button id="reload-ext" type="button" class="btn btn-sm">Reload extension</button>
-          </div>
-          <div class="tools-toggles">
-            <label class="inline"><input id="dl-badge-unlock" type="checkbox" /> unlock/upload badge</label>
-            <label class="inline"><input id="dl-badge-history" type="checkbox" /> history badge</label>
-            <label class="inline"><input id="dl-badge-disk" type="checkbox" /> on-disk badge</label>
-          </div>
-          <div class="tools-folder">
-            <button id="dl-folder" type="button" class="btn btn-sm">Connect download folder</button>
-            <button id="dl-scan" type="button" class="btn btn-sm">Scan folder</button>
-            <button id="dl-rebuild" type="button" class="btn btn-sm">Rebuild index</button>
-            <button id="dl-cancel" type="button" class="btn btn-sm" hidden>Cancel</button>
-            <span id="dl-folder-status" class="muted"></span>
           </div>
           <div class="muted tools-hint">
             Diagnose dumps the live selector map; Record flow traces your clicks so menus can be mapped.
