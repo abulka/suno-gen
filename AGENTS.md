@@ -154,14 +154,18 @@ node tools/inspect-audio.js --url=<url>    # same, from a URL (streams are encry
   Top-right: `disk` (green tick — a file is on disk, tooltip shows the path).
   The padlock/seed come from Suno's `clip.is_download_unlocked` + `metadata.type`
   via the page hook; history/disk are local. The always-visible **Downloads
-  folder** card at the top of the panel owns the connection (Connect/Reconnect),
-  shows a live state pill, and a warning box. If Chrome pauses the grant
-  (`queryPermission` returns `prompt` — common after the panel document is
-  recreated), the card shows **access paused** (not "not connected") and the next
-  click anywhere in the panel silently re-grants via `requestPermission` and
-  rescans — no folder picker. `lastScan` (time + matched count) is persisted so
-  the state survives reopening the panel. Scan/Rebuild and the three badge
-  toggles live under **Tools → Download sync**
+  folder** card at the top of the panel owns the connection, showing a two-state
+  pill (`connected` / `not connected`), the last-scan summary, a primary
+  Connect/Reconnect button (dimmed while connected, active when not), and a ghost
+  **Change folder…** button (shown only when a folder is linked). Reconnect re-requests access on the **same** stored handle
+  (`requestPermission`, no picker) and rescans; Change folder opens the picker.
+  Chrome does not reliably persist File System Access grants, so auto-scans (on
+  panel open / download complete) run only when `queryPermission` is already
+  `granted` — otherwise the card just shows `not connected` and the user clicks
+  Reconnect, choosing **"Allow on every visit"** in Chrome's prompt to make it
+  stick. `lastScan` (time + matched count) is persisted so the state survives
+  reopening the panel. Scan/Rebuild and the three badge toggles live under
+  **Tools → Download sync**
   (`settings.showUnlockBadge`, `showHistoryBadge`, `showDiskBadge`).
 - **Re-injection loses in-memory state**: opening the panel re-injects the
   content scripts, which recreates `row-indicators.js` (disk/history survive via

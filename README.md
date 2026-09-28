@@ -115,13 +115,16 @@ the panel. The on-disk badge's tooltip shows the matched file path.
 ### Folder scan
 
 The always-visible **Downloads folder** card (top of the panel) owns the folder
-connection. Click **Connect download folder** and grant read access to your Suno
-downloads folder (via the File System Access API). The card warns when the folder
-isn't connected or its permission has lapsed, and remembers the last scan's time
-+ matched count. If Chrome pauses the grant (the card shows **access paused**),
-the next click anywhere in the panel re-grants it silently — no need to pick the
-folder again. **Scan folder** / **Rebuild index** live under **Tools → Download
-sync**. The scan:
+connection and shows a simple `connected` / `not connected` pill plus the last
+scan. Click **Connect download folder** and grant read access to your Suno
+downloads folder (via the File System Access API). Once connected, the primary
+button becomes **Reconnect download folder** (dimmed while connected, active when
+not), which re-asks Chrome for access to the same folder (no picker) and rescans;
+a ghost **Change folder…** button opens the picker when you want a different
+folder. Chrome doesn't reliably remember
+File System Access grants, so after a while it may ask again — when its prompt
+appears, choose **"Allow on every visit"** so ticks keep updating automatically.
+**Scan folder** / **Rebuild index** live under **Tools → Download sync**. The scan:
 
 - Matches files to clips by the clip id embedded in the audio metadata (M4A
   `©cmt`, WAV `ICMT`, and the C2PA `com.suno.provenance` / `icontentIdx` block).

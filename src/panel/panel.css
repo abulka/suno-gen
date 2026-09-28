@@ -80,6 +80,8 @@ input:focus, textarea:focus { outline: 1px solid var(--accent); border-color: va
   cursor: pointer;
 }
 .btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--border); }
 .btn-sm { padding: 4px 8px; font-size: 12px; }
 .btn-ghost { background: transparent; }
 .btn-primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; font-weight: 600; }
@@ -112,23 +114,11 @@ input:focus, textarea:focus { outline: 1px solid var(--accent); border-color: va
 /* Downloads folder card: reified, always-visible folder connection state. */
 #downloads-card { border-color: #34343f; }
 .folder-status { font-size: 11px; margin: 2px 0 6px; min-height: 13px; }
-.folder-warn {
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--warn);
-  background: rgba(210, 153, 34, 0.08);
-  border: 1px solid #3a2f13;
-  border-radius: 7px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
-}
 .folder-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
 
 .pill { font-size: 10px; padding: 2px 7px; border-radius: 999px; background: var(--card-2); border: 1px solid var(--border); }
 .pill-ok { color: var(--ok); border-color: #1c3a24; }
 .pill-warn { color: var(--warn); border-color: #3a2f13; }
-.pill-err { color: var(--err); border-color: #3f1d1b; }
-.pill-busy { color: var(--accent); border-color: #24305a; }
 
 .muted { color: var(--muted); }
 
