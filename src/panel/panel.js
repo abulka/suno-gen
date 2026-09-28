@@ -121,7 +121,8 @@
   const FOLDER_PILL = {
     ok: { cls: "pill-ok", card: "connected" },
     busy: { cls: "pill-busy", card: "working" },
-    warn: { cls: "pill-warn", card: "not connected" },
+    access: { cls: "pill-warn", card: "access paused" },
+    warn: { cls: "pill-warn", card: "attention" },
     off: { cls: "pill-warn", card: "not connected" },
     err: { cls: "pill-err", card: "error" },
     idle: { cls: "", card: "not checked" }
@@ -130,32 +131,99 @@
     off:
       "Not connected to your downloads folder — on-disk (green tick) badges can't be determined. " +
       "Connect a folder to see which clips are already saved.",
-    warn:
-      "Folder access expired — reconnect to restore on-disk (green tick) badges. " +
-      "Your last scan is shown below.",
+    access:
+      "Linked, but Chrome needs you to re-confirm access. Click Restore access (or anywhere in " +
+      "this panel) — no need to pick the folder again.",
+    warn: "Downloads folder needs attention — on-disk (green tick) badges may be out of date.",
     err: "Downloads folder error — on-disk (green tick) badges may be out of date."
   };
 
+  let folderStateKind = null;
+  let accessArmed = false;
+  let accessTried = false;
+  let restoreInFlight = false;
+
   /**
-   * Drive the folder card from one place: the status pill, the status line, and
-   * the warning box all reflect the same state. This is the reified replacement
-   * for the old hidden-in-Tools status string.
+   * Drive the folder card from one place: the status pill, the status line, the
+   * warning box, and the Connect/Restore button all reflect the same state.
    */
   function setFolderState(kind, text, alertText) {
+    folderStateKind = kind;
     const meta = FOLDER_PILL[kind] || FOLDER_PILL.idle;
     const statusEl = $("dl-folder-status");
     const pill = $("dl-status-pill");
     const warnEl = $("dl-folder-warn");
+    const folderBtn = $("dl-folder");
     if (statusEl) statusEl.textContent = text || "";
     if (pill) {
       pill.textContent = meta.card;
       pill.className = "pill " + meta.cls;
     }
+    if (folderBtn) {
+      folderBtn.textContent =
+        kind === "off" ? "Connect download folder" : kind === "access" ? "Restore access" : "Reconnect download folder";
+    }
     if (warnEl) {
-      const show = kind === "off" || kind === "warn" || kind === "err";
+      const show = kind === "off" || kind === "warn" || kind === "err" || kind === "access";
       warnEl.hidden = !show;
       if (show) warnEl.textContent = alertText || FOLDER_ALERT[kind] || "";
     }
+    if (kind === "access") armAccessSelfHeal();
+    else if (kind === "ok" || kind === "off") accessTried = false;
+  }
+
+  /**
+   * Re-grant read access to the already-linked folder without opening the folder
+   * picker. Must run during a user gesture (Chrome rejects requestPermission
+   * otherwise). On success, repaint and rescan.
+   */
+  async function restoreFolderAccess() {
+    if (restoreInFlight || scanState) return;
+    restoreInFlight = true;
+    accessTried = true;
+    try {
+      let handle;
+      try {
+        handle = await idbGet(FS_STORE, "downloadFolder");
+      } catch (err) {
+        return;
+      }
+      if (!handle) {
+        await renderDownloadsFolder();
+        return;
+      }
+      let perm = "prompt";
+      try {
+        perm = await handle.queryPermission({ mode: "read" });
+      } catch (err) {
+        /* ignore */
+      }
+      if (perm !== "granted") {
+        try {
+          perm = await handle.requestPermission({ mode: "read" });
+        } catch (err) {
+          perm = "prompt";
+        }
+      }
+      await renderDownloadsFolder();
+      if (perm === "granted") await autoScanDownloadFolder();
+    } finally {
+      restoreInFlight = false;
+    }
+  }
+
+  /** One-shot self-heal: the next click anywhere in the panel restores access. */
+  function armAccessSelfHeal() {
+    if (accessArmed || accessTried) return;
+    accessArmed = true;
+    document.addEventListener("pointerdown", onAccessGesture, true);
+  }
+
+  function onAccessGesture() {
+    document.removeEventListener("pointerdown", onAccessGesture, true);
+    accessArmed = false;
+    accessTried = true;
+    restoreFolderAccess().catch(() => {});
   }
 
   function formatLastScan(rec) {
@@ -302,7 +370,7 @@
       let perm = await handle.queryPermission({ mode: "read" });
       if (perm !== "granted") perm = await handle.requestPermission({ mode: "read" });
       if (perm !== "granted") {
-        setFolderState("warn", "permission needed");
+        setFolderState("access", "permission needed");
         return;
       }
     } catch (err) {
@@ -379,8 +447,8 @@
       );
 
       if (state.cancelled) {
-        setFolderState("warn", "cancelled");
         logLine("Folder scan cancelled.");
+        renderDownloadsFolder().catch(() => {});
         return;
       }
 
@@ -471,8 +539,8 @@
   /**
    * Single source of truth for the folder card on boot: reads the stored handle,
    * its current permission, and the last persisted scan summary, then paints the
-   * card + header pill. Runs before an auto-scan, so the user always sees the
-   * last known state even if a rescan is skipped or still running.
+   * card. Runs before an auto-scan, so the user always sees the last known state
+   * even if a rescan is skipped or still running.
    */
   async function renderDownloadsFolder() {
     let handle = null;
@@ -480,10 +548,6 @@
       handle = await idbGet(FS_STORE, "downloadFolder");
     } catch (err) {
       /* ignore */
-    }
-    const folderBtn = $("dl-folder");
-    if (folderBtn) {
-      folderBtn.textContent = handle ? "Reconnect download folder" : "Connect download folder";
     }
     if (!handle) {
       setFolderState("off", "no folder connected");
@@ -506,15 +570,14 @@
     if (perm === "granted") {
       setFolderState("ok", summary || "connected");
     } else {
-      setFolderState("warn", summary ? "needs reconnect · " + summary : "needs reconnect");
+      setFolderState("access", summary ? "access paused · " + summary : "access paused");
     }
   }
 
   /**
-   * Rescan only when a folder is already connected and its permission is still
-   * granted. Unlike `scanDownloadFolder`, this never calls `requestPermission`
-   * (there is no user gesture on the panel-open / download-complete paths), so
-   * a lapsed permission is a silent no-op rather than a "permission error".
+   * Rescan on panel-open / download-complete. These paths have no user gesture,
+   * so this never calls `requestPermission` itself: if the grant has been paused
+   * it paints the "access paused" state and arms the one-click self-heal instead.
    */
   async function autoScanDownloadFolder() {
     if (scanState) return;
@@ -532,7 +595,10 @@
       return;
     }
     if (perm !== "granted") {
-      setFolderState("warn", "needs reconnect");
+      // Chrome paused the grant for this context (common after a panel reload).
+      // Show "access paused" + last scan and arm the one-click self-heal rather
+      // than pretending the folder was never linked.
+      await renderDownloadsFolder();
       return;
     }
     await scanDownloadFolder();
@@ -1189,7 +1255,10 @@
       saveSettings({ showDiskBadge: e.target.checked })
     );
 
-    $("dl-folder").addEventListener("click", () => connectDownloadFolder());
+    $("dl-folder").addEventListener("click", () => {
+      if (folderStateKind === "access") restoreFolderAccess();
+      else connectDownloadFolder();
+    });
     $("dl-scan").addEventListener("click", () => scanDownloadFolder());
     $("dl-rebuild").addEventListener("click", () => rebuildDownloadIndex());
     $("dl-cancel").addEventListener("click", () => {

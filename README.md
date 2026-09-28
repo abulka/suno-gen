@@ -118,7 +118,9 @@ The always-visible **Downloads folder** card (top of the panel) owns the folder
 connection. Click **Connect download folder** and grant read access to your Suno
 downloads folder (via the File System Access API). The card warns when the folder
 isn't connected or its permission has lapsed, and remembers the last scan's time
-+ matched count. **Scan folder** / **Rebuild index** live under **Tools → Download
++ matched count. If Chrome pauses the grant (the card shows **access paused**),
+the next click anywhere in the panel re-grants it silently — no need to pick the
+folder again. **Scan folder** / **Rebuild index** live under **Tools → Download
 sync**. The scan:
 
 - Matches files to clips by the clip id embedded in the audio metadata (M4A
