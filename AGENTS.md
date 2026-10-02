@@ -88,6 +88,68 @@ node tools/inspect-audio.js --url=<url>    # same, from a URL (streams are encry
   descriptors, persisted in `sessionStorage` so it survives navigation; retrieve
   via Tools → Copy log/diagnostics. Use when a menu path is unknown.
 
+## Driving the browser via Playwright MCP (for the chad harness)
+
+> This section exists **for other agent harnesses (chad, etc.), not for opencode**.
+> opencode is already configured with the Playwright MCP server and gets these tools
+> natively, so it can ignore this section. The point here is that chad can drive the
+> browser exactly the way opencode does **without the project `node_modules`**.
+
+The `tools/` harness above (`npm install` + `npm run chrome` + `connectOverCDP`) is
+one way to test; the **MCP way needs no `npm install` at all**. It does not load
+playwright from the project — it talks to a long-lived `@playwright/mcp` process
+that carries its own copy (cached under `~/.npm/_npx/…`), driving system Chrome.
+
+### Config (already installed for chad)
+
+`~/.chad/mcp.json` defines the same server opencode uses:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "env": {
+        "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"
+      }
+    }
+  }
+}
+```
+
+- User-level (`~/.chad/`) is trusted and never prompts. A project `./.mcp.json`
+  would also work but chad gates it behind `/mcp trust` per cwd.
+- chad namespaces the tools `mcp__playwright__browser_*` (e.g.
+  `mcp__playwright__browser_navigate`, `…__browser_evaluate`,
+  `…__browser_run_code_unsafe`). opencode sees them as `playwright_browser_*`.
+- The MCP-launched Chrome uses its **own persistent profile**, separate from
+  `tools/.chrome-profile`. Log into Suno manually in that window **once**.
+- No browser download and no project `node_modules`: `playwright-core` never
+  downloads a browser, and only `tools/` scripts need the package.
+
+### How to test the extension this way
+
+Same technique `tools/test-flow.js` documents: **inject the shipping modules into
+the live Suno page and call the `_internals` test seam**, instead of loading the
+packaged extension.
+
+1. `browser_navigate` to `https://suno.com/me` (or `/create`), confirm logged in.
+2. Read `src/shared/title.js`, `src/content/selectors.js`,
+   `src/content/cover-flow.js`, then inject all three into the page — the MCP
+   equivalent of `page.addScriptTag` via `browser_run_code_unsafe`
+   (`async (page) => { await page.addScriptTag({ content: <file source> }); … }`).
+3. Call the seam: `globalThis.SunoGenCoverFlow._internals.*`
+   (`ensureSourceRow`, `selectWorkspace`, `monitorJobs`, …).
+4. Verify for free with `browser_evaluate` / screenshots. **Only call
+   `clickCreate` when the user has explicitly authorised generation (spends
+   credits).**
+
+Caveat: this exercises the pure logic, not the manifest-loaded content scripts /
+service worker / side panel. For those, use the `tools/` harness with the unpacked
+extension loaded, or the MCP `--extension` flag.
+
 ## Environment / gotchas
 
 - macOS; Chrome at `/Applications/Google Chrome.app/...` (override `CHROME_PATH`).

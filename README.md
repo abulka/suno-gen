@@ -1,51 +1,82 @@
 # Suno Generator
 
-**Suno Generator** is a Chrome (Manifest V3) extension that batch-generates
+**Suno Generator** is a Chrome extension that batch-generates
 [Suno](https://suno.com) **Cover Song** variations from saved **style presets**,
 applying your naming and workspace conventions. It works by driving the real
 suno.com UI — there is no public Suno API and Workspaces are UI-only.
 
-Give it one or more source songs and a set of presets; it walks Suno's own
-cover flow for each preset (set the cover source, Advanced mode, style, title,
-lyrics, workspace) and submits the batch, then monitors each job to completion.
+Give it one or more source songs and a set of presets; it walks Suno's own cover
+flow for each preset (set the cover source, Advanced mode, style, title, lyrics,
+workspace) and submits the batch, then monitors each job to completion.
 
-![Suno Generator side panel](docs/screenshot-1.png)
+![Suno Generator side panel](docs/screenshot-1a.png)
 
----
+## Two headline features
 
-## ⚠️ Disclaimer
+### Batch cover generation
 
-This is an **unofficial, personal-use tool**. It is **not affiliated with,
-endorsed by, or supported by Suno**. It automates the suno.com web UI, which
-may violate Suno's Terms of Service and can break whenever Suno ships UI
-changes. Use it at your own risk.
+Pick one or several source songs and tick the **style presets** you want, then
+click once — there's no need to manually walk Suno's cover flow and change the
+style over and over. The extension expands *sources × presets* into jobs and
+submits them all, naming each resulting song with the style code so you can tell
+at a glance which songs were generated with which style:
 
-- Generating songs (and downloading them) **spends credits / plan allowances**.
-- The developer harness can be told to actually submit jobs — only do so on an
-  account and with credits you are willing to spend.
-- Provided under the MIT License, with no warranty (see [`LICENSE`](LICENSE)).
+- **Title template:** `{date} {take}-{rating} {styleCode} - {songName}`
+  - `date` = `YY-M` (e.g. `26-9`); `take` = 2-digit and steps by 2 per style;
+    `rating` defaults to the literal `iiiN` (a searchable placeholder you edit
+    later); `styleCode` = no spaces, ≤ 8 chars.
+  - Example: `26-9 01-iiiN qhvy - happy song`
+- **Workspace:** defaults to `{date} {songName}` (e.g. `26-9 bird song`), or a
+  per-preset override. Missing workspaces are auto-created.
 
-## Status
+Each style preset holds a style prompt, a short style code, optional lyrics and
+an optional workspace override. A "take" counter steps by 2 per job because Suno
+always makes 2 clips per Create.
 
-A developer tool at the moment: it is **loaded unpacked**, not published to the
-Chrome Web Store, and has no automated test suite. Selectors and behaviours are
-verified against live Suno but can drift.
+### Download management
 
-## Features
+Point the extension at a local folder where you keep your Suno downloads and an
+icon appears **in the Suno UI itself**, over any songs that have been downloaded
+to your disk — so you can keep track of which songs you already have. It works
+out not only which Suno songs have been unlocked for download, but also which of
+those songs have been found on your local disk, matched against the online Suno
+song UUIDs embedded in the downloaded audio files.
+
+## Download badges
+
+Suno Generator injects small badges onto each clip's artwork in the Suno clip
+list, each showing an independent fact about the clip. They are overlaid
+directly in the Suno UI, so you can see at a glance which songs you already
+have without leaving the page.
+
+![Suno Generator badges injected into the Suno UI](docs/screenshot-2-icon-meanings.png)
+
+| Icon | Meaning |
+|------|---------|
+| Grey open padlock | **Unlocked** on Suno — re-download is free |
+| Purple sprout | An unlocked clip that is **your own upload** |
+| Violet down-arrow | A download was seen in **Chrome download history** |
+| Green tick (top-right) | A file is **on disk** (found by the folder scan) |
+
+Each badge has its own checkbox under **Tools → Download sync**, so you can turn
+individual indicators on or off. The on-disk badge's tooltip shows the matched
+file path.
+
+The folder scan is what powers the green tick — it matches downloaded files to
+clips by the Suno UUID embedded in the audio metadata. See
+[Download folder & scan](#download-folder--scan) for the details.
+
+## More features
 
 - **Multiple sources** — pick one or several source songs; names are derived
   per source and de-duplicated.
 - **Style presets** — each with a style prompt, a short style code, optional
   lyrics, and an optional workspace override.
-- **Naming conventions** — automatic titles and workspace names (see below),
-  with a "take" counter that steps by 2 per job (Suno always makes 2 clips per
-  Create).
+- **Naming conventions** — automatic titles and workspace names (see above).
 - **Batch engine** — expands *sources × presets* into jobs, fills the create
-  form, selects/creates the workspace, verifies it, and submits.
+  form, selects/creates and verifies the workspace, and submits.
 - **Status monitoring** — watches each job through `queued → streaming →
   complete`, deduped across the DOM poll and a network hook.
-- **Download badges** — per-row indicators for unlock state, uploads, Chrome
-  download history, and files actually on disk (see below).
 - **Folder scan** — optionally point it at your downloads folder to mark which
   clips are on disk, matched by the clip id embedded in the audio file.
 
@@ -56,10 +87,12 @@ verified against live Suno but can drift.
 
 ## Installation (load unpacked)
 
+The extension is **not published to the Chrome Web Store** — it's a developer
+tool that you load unpacked yourself:
+
 1. Get the code:
    ```bash
-   git clone <your-repo-url> suno-gen
-   # or download and unzip the repository
+   git clone https://github.com/abulka/suno-gen.git suno-gen
    ```
 2. Open `chrome://extensions` in Chrome.
 3. Enable **Developer mode** (top right).
@@ -88,43 +121,33 @@ into the active Suno tab. If behaviour still looks stale:
 5. Tick **dry run** first to preview jobs without submitting.
 6. Click **Generate batch**.
 
-### Naming & workspaces
+Titles and workspaces follow the conventions described under
+[Batch cover generation](#batch-cover-generation).
 
-- **Title template:** `{date} {take}-{rating} {styleCode} - {songName}`
-  - `date` = `YY-M` (e.g. `26-9`); `take` = 2-digit and steps by 2 per style;
-    `rating` defaults to the literal `iiiN` (a searchable placeholder you edit
-    later); `styleCode` = no spaces, ≤ 8 chars.
-  - Example: `26-9 01-iiiN qhvy - happy song`
-- **Workspace:** defaults to `{date} {songName}` (e.g. `26-9 bird song`), or a
-  per-preset override. Missing workspaces are auto-created.
+## Permissions
 
-## Download badges
+| Permission | Why |
+|------------|-----|
+| `sidePanel` | The UI lives in Chrome's side panel. |
+| `storage` | Presets, settings, and status live in `chrome.storage.local`. |
+| `scripting` | Inject/refresh content scripts into an already-open Suno tab. |
+| `tabs` | Find and message the active Suno tab. |
+| `downloads` | Track which clips have been downloaded (badges, folder matching). |
+| `https://suno.com/*`, `https://*.suno.com/*` | Host access to drive the Suno UI. |
 
-Small badges on each clip row show independent facts:
-
-| Icon | Meaning |
-|------|---------|
-| Grey open padlock | **Unlocked** on Suno — re-download is free |
-| Purple sprout | An unlocked clip that is **your own upload** |
-| Violet down-arrow | A download was seen in **Chrome download history** |
-| Green tick (top-right) | A file is **on disk** (found by the folder scan) |
-
-Each badge has its own checkbox under **Tools → Download sync** at the bottom of
-the panel. The on-disk badge's tooltip shows the matched file path.
-
-### Folder scan
+## Download folder & scan
 
 The always-visible **Downloads folder** card (top of the panel) owns the folder
 connection and shows a simple `connected` / `not connected` pill plus the last
 scan. Click **Connect download folder** and grant read access to your Suno
 downloads folder (via the File System Access API). Once connected, the primary
-button becomes **Reconnect download folder** (dimmed while connected, active when
-not), which re-asks Chrome for access to the same folder (no picker) and rescans;
-a ghost **Change folder…** button opens the picker when you want a different
-folder. Chrome doesn't reliably remember
-File System Access grants, so after a while it may ask again — when its prompt
-appears, choose **"Allow on every visit"** so ticks keep updating automatically.
-**Scan folder** / **Rebuild index** live under **Tools → Download sync**. The scan:
+button becomes **Reconnect download folder** (dimmed while connected, active
+when not), which re-asks Chrome for access to the same folder (no picker) and
+rescans; a ghost **Change folder…** button opens the picker when you want a
+different folder. Chrome doesn't reliably remember File System Access grants, so
+after a while it may ask again — when its prompt appears, choose **"Allow on
+every visit"** so ticks keep updating automatically. **Scan folder** / **Rebuild
+index** live under **Tools → Download sync**. The scan:
 
 - Matches files to clips by the clip id embedded in the audio metadata (M4A
   `©cmt`, WAV `ICMT`, and the C2PA `com.suno.provenance` / `icontentIdx` block).
@@ -141,17 +164,6 @@ appears, choose **"Allow on every visit"** so ticks keep updating automatically.
 Permissions for the folder are re-prompted by the browser after a restart; use
 **Reconnect download folder** to re-grant. Audio *streams* are encrypted and not
 readable; only files you have saved are inspected.
-
-## Permissions
-
-| Permission | Why |
-|------------|-----|
-| `sidePanel` | The UI lives in Chrome's side panel. |
-| `storage` | Presets, settings, and status live in `chrome.storage.local`. |
-| `scripting` | Inject/refresh content scripts into an already-open Suno tab. |
-| `tabs` | Find and message the active Suno tab. |
-| `downloads` | Track which clips have been downloaded (badges, folder matching). |
-| `https://suno.com/*`, `https://*.suno.com/*` | Host access to drive the Suno UI. |
 
 ## Development
 
@@ -216,6 +228,30 @@ docs/                                screenshots
   a row (Suno rows expose only the title).
 - Suno returns 2 clips per Create, always; there is no single-clip option.
 - UI changes on Suno's side can break selectors at any time.
+
+## Status & disclaimer
+
+This is an **unofficial, personal-use tool**. It is **not affiliated with,
+endorsed by, or supported by Suno**. It automates the suno.com web UI, which may
+violate Suno's Terms of Service and can break whenever Suno ships UI changes.
+Use it at your own risk.
+
+- It is a **developer tool**: loaded unpacked, not published to the Chrome Web
+  Store, and with no automated test suite. Selectors are verified against live
+  Suno but can drift.
+- Generating songs (and downloading them) **spends credits / plan allowances**.
+  The developer harness can be told to actually submit jobs — only do so on an
+  account and with credits you are willing to spend.
+- Provided under the MIT License, with no warranty (see [`LICENSE`](LICENSE)).
+
+## Technologies
+
+| Description | Technology |
+| --- | --- |
+| Extension platform | Chrome Manifest V3 (`sidePanel`, service worker, content scripts, MAIN-world page hook) |
+| UI | Side panel, vanilla HTML/CSS/JavaScript |
+| Local folder access | File System Access API (indexed in IndexedDB) |
+| Local dev harness | Node 24+ / Playwright (`tools/`, dev only) |
 
 ## License
 
