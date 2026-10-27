@@ -55,19 +55,30 @@
     return false;
   }
 
-  /** Type into the clip search (full title, then prefixes) until the row shows. */
+  /** Type into the clip search (full title, then distinctive fragments). */
   async function searchForClipRow(search, wanted) {
     S.setNativeValue(search, "");
     await sleep(250);
-    const queries = [wanted];
-    for (const len of [32, 20, 10]) {
-      if (wanted.length > len) queries.push(wanted.slice(0, len));
+    const queries = [];
+    const add = (q) => {
+      const v = String(q || "").trim();
+      if (v && !queries.includes(v)) queries.push(v);
+    };
+    add(wanted);
+    // Without the date prefix ("glasses v2 - mangled") and without the marker
+    // ("2026-06-14 glasses v2"). Suno's search sometimes ranks a long, exact
+    // title below other matches, so give it several distinctive probes.
+    add(wanted.replace(/^\d{4}-\d{1,2}-\d{1,2}\s+/, ""));
+    add(T.deriveSongName(wanted));
+    add(T.stripProcessingMarker(wanted));
+    for (const len of [32, 24, 16, 10]) {
+      if (wanted.length > len) add(wanted.slice(0, len));
     }
     for (const q of queries) {
       S.setNativeValue(search, q);
-      await sleep(350);
+      await sleep(400);
       const row = await S.waitFor(() => S.findClipRow(wanted) || S.findClipRow(q), {
-        timeout: 6000,
+        timeout: 8000,
         interval: 300
       }).catch(() => null);
       if (row) return row;
@@ -81,7 +92,8 @@
    * submission the list re-renders/virtualizes; navigate to the Library and
    * filter the clip search to bring the source back.
    */
-  async function ensureSourceRow(title) {
+  async function ensureSourceRow(title, attempt) {
+    const retry = attempt || 0;
     let row = S.findClipRow(title);
     if (row) return row;
 
@@ -135,6 +147,12 @@
         row = S.findClipRow(wanted);
       }
     }
+    if (!row && retry < 1) {
+      const search = S.find("clipSearchInput");
+      if (search && S.isVisible(search)) S.setNativeValue(search, "");
+      await sleep(1500);
+      return ensureSourceRow(title, retry + 1);
+    }
     return row;
   }
 
@@ -144,38 +162,70 @@
       throw new Error("No source track title. Pick a source again.");
     }
 
-    // No pre-check for clip rows here: the active tab may be showing a
-    // workspace/create view. `ensureSourceRow` navigates to the Library and
-    // searches for the source before giving up.
-    const row = await ensureSourceRow(source.title);
-    if (!row) throw new Error("Could not find a clip row titled '" + source.title + "'.");
+    const closeMenu = () => {
+      try {
+        const target = document.activeElement || document.body;
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+        );
+      } catch (err) {
+        /* ignore */
+      }
+    };
 
-    const more =
-      S.findIn(row, "moreOptionsButton") || row.querySelector("[aria-label='More options']");
-    if (!more) throw new Error("No 'More options' button found in the clip row.");
+    let lastError = null;
+    // Menus occasionally fail to render on the first click (Suno re-renders the
+    // row after each Create). Retry the whole row/menu path once instead of
+    // skipping the song.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const row = await ensureSourceRow(source.title);
+      if (!row) {
+        lastError = new Error("Could not find a clip row titled '" + source.title + "'.");
+        await sleep(1500);
+        continue;
+      }
 
-    S.clickEl(more);
-    await S.waitFor(
-      () => {
-        const menus = Array.from(
-          document.querySelectorAll("[data-context-menu='true'], [role='menu']")
-        ).filter(isVisible);
-        return menus.length ? true : null;
-      },
-      { timeout: 6000 }
-    ).catch(() => null);
+      const more =
+        S.findIn(row, "moreOptionsButton") || row.querySelector("[aria-label='More options']");
+      if (!more) {
+        lastError = new Error("No 'More options' button found in the clip row.");
+        await sleep(800);
+        continue;
+      }
 
-    if (!(await revealCoverMenuItem())) {
-      throw new Error("Cover menu item did not appear. Record the flow and update selectors.");
+      closeMenu();
+      await sleep(300);
+      S.clickEl(more);
+      const menuOpened = await S.waitFor(
+        () => {
+          const menus = Array.from(
+            document.querySelectorAll("[data-context-menu='true'], [role='menu']")
+          ).filter(isVisible);
+          return menus.length ? true : null;
+        },
+        { timeout: 6000 }
+      ).catch(() => null);
+
+      if (menuOpened && (await revealCoverMenuItem())) {
+        const coverItem = S.findMenuCover();
+        if (coverItem) {
+          S.clickEl(coverItem);
+          await sleep(700);
+          await clickKeepCurrentIfPresent();
+          return true;
+        }
+        lastError = new Error("Cover menu item vanished before it could be clicked.");
+      } else {
+        lastError = new Error(
+          "Cover menu item did not appear. Record the flow and update selectors."
+        );
+      }
+
+      closeMenu();
+      await sleep(1200);
     }
 
-    const coverItem = S.findMenuCover();
-    if (!coverItem) {
-      throw new Error("Cover menu item vanished before it could be clicked.");
-    }
-    S.clickEl(coverItem);
-    await sleep(700);
-    await clickKeepCurrentIfPresent();
+    throw lastError || new Error("Could not open the Cover menu.");
   }
 
   // ---------- dialogs ----------
@@ -509,10 +559,134 @@
   }
 
   /**
+   * Feed-based monitor: reads the library feed (not just visible rows) so
+   * off-screen clips, missing siblings and error statuses are all accounted
+   * for. Returns a verification report, or null when the feed is unavailable
+   * (caller falls back to DOM polling).
+   */
+  async function monitorJobsFeed(jobs, emit, timeoutMs, createdAfter) {
+    const Catalog = root.SunoGenCatalog;
+    if (!Catalog || typeof Catalog.recentClips !== "function") return null;
+
+    const expected = new Map();
+    for (const job of jobs) {
+      const key = job.title.trim().toLowerCase();
+      const entry = expected.get(key);
+      if (entry) entry.expected += 2;
+      else expected.set(key, { title: job.title.trim(), count: 0, expected: 2 });
+    }
+    const cutoff = (createdAfter || Date.now() - 15 * 60 * 1000) - 60 * 1000;
+    const noClipGraceMs = 30000; // a Create should show up well within this
+    const last = new Map();
+    const started = Date.now();
+    const limit = timeoutMs || 300000;
+    let terminalRounds = 0;
+    let emptyRounds = 0;
+    let lastClips = [];
+
+    while (Date.now() - started < limit) {
+      let clips = null;
+      try {
+        clips = await Catalog.recentClips(400);
+      } catch (err) {
+        return null; // signed out / endpoint changed: use DOM polling
+      }
+      lastClips = clips;
+
+      const byTitle = new Map();
+      for (const clip of clips) {
+        const key = String(clip.title || "").trim().toLowerCase();
+        if (!expected.has(key)) continue;
+        const created = clip.createdAt ? Date.parse(clip.createdAt) : 0;
+        if (created && created < cutoff) continue; // older batch with same title
+        const list = byTitle.get(key) || [];
+        list.push(clip);
+        byTitle.set(key, list);
+      }
+
+      if (!byTitle.size) {
+        emptyRounds++;
+        // Feed has nothing for this batch yet; give it a few rounds, then fall
+        // back to DOM polling rather than waiting on an unrelated feed.
+        if (emptyRounds >= 6) return null;
+      } else {
+        emptyRounds = 0;
+      }
+
+      let allTerminal = true;
+      for (const [key, info] of expected) {
+        const list = byTitle.get(key) || [];
+        if (list.length > info.count) info.count = list.length;
+        const statuses = list.map((c) => String(c.status || "").toLowerCase());
+        let status = "submitted";
+        if (!list.length) {
+          status = Date.now() - started > noClipGraceMs ? "missing" : "submitted";
+        } else if (statuses.some((s) => s === "error" || s === "failed")) {
+          status = "error";
+        } else if (statuses.every((s) => s === "complete")) {
+          status = "complete";
+        } else if (statuses.some((s) => s === "streaming")) {
+          status = "streaming";
+        } else {
+          status = "queued";
+        }
+
+        if (last.get(key) !== status) {
+          last.set(key, status);
+          emit({ type: "job-status", title: info.title, status: status });
+        }
+        if (
+          status !== "complete" &&
+          status !== "error" &&
+          status !== "failed" &&
+          status !== "missing"
+        ) {
+          allTerminal = false;
+        }
+      }
+
+      if (allTerminal) {
+        // Every title we can see is terminal. Give late/failed siblings a grace
+        // period to appear before calling the batch short.
+        const short = [...expected.values()].some((v) => v.count < v.expected);
+        if (!short) break;
+        terminalRounds++;
+        if (terminalRounds >= 6) break; // ~30 s
+      } else {
+        terminalRounds = 0;
+      }
+      await sleep(5000);
+    }
+
+    const report = [...expected.values()].map((v) => ({
+      title: v.title,
+      found: v.count,
+      expected: v.expected
+    }));
+    const errors = [];
+    for (const clip of lastClips) {
+      if (!expected.has(String(clip.title || "").trim().toLowerCase())) continue;
+      if (clip.status === "error" || clip.status === "failed" || clip.errorType) {
+        errors.push({
+          title: clip.title,
+          status: clip.status,
+          errorType: clip.errorType,
+          errorMessage: clip.errorMessage
+        });
+      }
+    }
+    emit({ type: "batch-verify", jobs: report, errors: errors });
+    return report;
+  }
+
+  /**
    * Poll the visible clip rows for our job titles until they finish.
    * Rows expose data-clip-status (queued / streaming / complete / error).
    */
-  async function monitorJobs(jobs, emit, timeoutMs) {
+  async function monitorJobs(jobs, emit, timeoutMs, createdAfter) {
+    const feed = await monitorJobsFeed(jobs, emit, timeoutMs, createdAfter).catch(() => null);
+    if (feed) return feed;
+
     const titleByKey = new Map(
       jobs.map((j) => [j.title.trim().toLowerCase(), j.title.trim()])
     );
@@ -563,6 +737,7 @@
     }
 
     const results = [];
+    const batchStarted = Date.now();
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i];
       const preset = config.presets.find((p) => p.id === job.presetId);
@@ -588,7 +763,7 @@
 
     if (results.some((r) => r.ok)) {
       log({ type: "monitor-start", count: results.filter((r) => r.ok).length });
-      await monitorJobs(jobs, log, settings.monitorTimeoutMs);
+      await monitorJobs(jobs, log, settings.monitorTimeoutMs, batchStarted);
     }
     // Leave the library search as we found it.
     try {
@@ -616,7 +791,8 @@
       fillLyrics: fillLyrics,
       selectWorkspace: selectWorkspace,
       clickCreate: clickCreate,
-      monitorJobs: monitorJobs
+      monitorJobs: monitorJobs,
+      monitorJobsFeed: monitorJobsFeed
     }
   };
 })(globalThis);

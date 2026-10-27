@@ -434,6 +434,37 @@
   }
 
   /**
+   * Newest library clips, for post-batch verification. The feed is cursor-based
+   * and returns at most 100 per page; a batch is normally one page.
+   */
+  async function recentClips(maxClips, onProgress) {
+    const max = Math.max(1, Math.min(Number(maxClips) || 100, 1000));
+    const byId = new Map();
+    let cursor = null;
+    for (let page = 0; page < 10; page++) {
+      const res = await fetchFeedPage(cursor);
+      for (const clip of res.clips) {
+        if (!clip || !clip.id || byId.has(clip.id)) continue;
+        const meta = clip.metadata && typeof clip.metadata === "object" ? clip.metadata : {};
+        byId.set(clip.id, {
+          id: String(clip.id),
+          title: String(clip.title || meta.title || ""),
+          status: String(clip.status || ""),
+          createdAt: clip.created_at || null,
+          errorType: meta.error_type || null,
+          errorMessage: meta.error_message || null
+        });
+      }
+      if (onProgress) onProgress({ done: byId.size, total: max, page: page + 1 });
+      if (byId.size >= max) break;
+      if (!res.hasMore || !res.cursor || !res.clips.length) break;
+      cursor = res.cursor;
+      await sleep(80);
+    }
+    return [...byId.values()];
+  }
+
+  /**
    * Candidate rows for the repair tool: generated cover clips (not uploads) with
    * a song-name separator, plus the title of the clip they cover.
    */
@@ -780,6 +811,7 @@
     collectWorkspaces: collectWorkspaces,
     searchLibrarySongs: searchLibrarySongs,
     collectTitleRepairs: collectTitleRepairs,
+    recentClips: recentClips,
     renameClip: renameClip,
     renameClips: renameClips,
     collectSongs: collectSongs,

@@ -1809,6 +1809,28 @@
       logLine("Waiting for " + msg.count + " generation(s)…");
     } else if (msg.event === "job-status") {
       logStatus(msg.title, msg.status);
+    } else if (msg.event === "batch-verify") {
+      const jobs = Array.isArray(msg.jobs) ? msg.jobs : [];
+      const short = jobs.filter((j) => Number(j.found) < Number(j.expected));
+      if (!short.length) {
+        logLine("Verified: every submitted job produced 2 clip(s).", "ok");
+      } else {
+        logLine(
+          "Verification: " + short.length + " job(s) produced fewer than 2 clips:",
+          "err"
+        );
+        short.forEach((j) =>
+          logLine("  " + j.title + " — " + (j.found || 0) + "/" + (j.expected || 2) + " clip(s)", "err")
+        );
+      }
+      const errs = Array.isArray(msg.errors) ? msg.errors : [];
+      errs.forEach((e) =>
+        logLine(
+          "  " + (e.title || "clip") + " — " +
+            (e.errorMessage || e.errorType || e.status || "generation failed"),
+          "err"
+        )
+      );
     } else if (msg.event === "batch-complete") {
       logLine("Batch complete.");
     } else if (msg.event === "catalog-progress") {
@@ -1832,6 +1854,16 @@
   function renderPageEvent(payload) {
     if (!payload) return;
     if (payload.event === "hook-ready") {
+      return;
+    }
+    if (payload.event === "generate-error") {
+      logLine(
+        "Suno generation error" +
+          (payload.status ? " (" + payload.status + ")" : "") +
+          ": " +
+          (payload.message || "unknown error"),
+        "err"
+      );
       return;
     }
     if (payload.clips && payload.clips.length) {

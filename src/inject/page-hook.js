@@ -26,11 +26,52 @@
   const lastStatus = new Map();
   // Remember the last download metadata per clip id so we only emit on change.
   const lastMeta = new Map();
+  // Dedupe generation-error reports (fetch + Response.text may both see them).
+  const lastGenerateError = new Map();
 
   function interesting(url) {
     if (!url) return false;
     const u = String(url);
     return API_HINTS.some((h) => u.includes(h));
+  }
+
+  function isGenerateUrl(url) {
+    return /\/api\/generate\//i.test(String(url || ""));
+  }
+
+  /** Forward a rejected / error-bearing generate response for the panel log. */
+  function reportGenerateError(url, status, body) {
+    if (!isGenerateUrl(url)) return;
+    let message = "";
+    if (body && typeof body === "object") {
+      const raw =
+        body.detail ||
+        body.error_message ||
+        body.message ||
+        (body.error && (body.error.message || body.error)) ||
+        body.error_type ||
+        "";
+      message = typeof raw === "string" ? raw : JSON.stringify(raw);
+    } else if (typeof body === "string") {
+      message = body;
+    }
+    const ok = status >= 200 && status < 300;
+    if (ok && !message) return;
+    if (/^\s*</.test(message)) {
+      message = message.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    }
+    const key = String(status || 0) + "|" + message.slice(0, 120);
+    const last = lastGenerateError.get(key);
+    if (last && Date.now() - last < 10000) return;
+    lastGenerateError.set(key, Date.now());
+    if (lastGenerateError.size > 100) lastGenerateError.clear();
+    post({
+      event: "generate-error",
+      status: Number(status) || 0,
+      url: String(url),
+      message: String(message || "").slice(0, 500),
+      at: Date.now()
+    });
   }
 
   function statusFrom(url, json) {
@@ -124,22 +165,25 @@
     post({ event: "clip-meta", items: changed, at: Date.now() });
   }
 
-  function handle(url, text) {
+  function handle(url, text, status) {
     let json = null;
     try {
       json = JSON.parse(text);
     } catch (err) {
+      if (isGenerateUrl(url)) reportGenerateError(url, status, text);
       return;
     }
     if (!json) return;
     statusFrom(url, json);
     clipMetaFrom(json);
+    if (isGenerateUrl(url)) reportGenerateError(url, status, json);
   }
 
-  function handleObject(url, json) {
+  function handleObject(url, json, status) {
     if (!json || typeof json !== "object") return;
     statusFrom(url, json);
     clipMetaFrom(json);
+    if (isGenerateUrl(url)) reportGenerateError(url, status, json);
   }
 
   const origFetch = window.fetch;
@@ -155,7 +199,7 @@
           const clone = res.clone();
           clone
             .text()
-            .then((text) => handle(url, text))
+            .then((text) => handle(url, text, res.status))
             .catch(() => {});
         } catch (err) {
           /* ignore */
@@ -172,8 +216,9 @@
     Response.prototype.json = function () {
       const p = nativeJson.apply(this, arguments);
       const url = this.url;
+      const status = this.status;
       if (interesting(url)) {
-        p.then((data) => handleObject(url, data), () => {});
+        p.then((data) => handleObject(url, data, status), () => {});
       }
       return p;
     };
@@ -184,8 +229,9 @@
     Response.prototype.text = function () {
       const p = nativeText.apply(this, arguments);
       const url = this.url;
+      const status = this.status;
       if (interesting(url)) {
-        p.then((body) => handle(url, body), () => {});
+        p.then((body) => handle(url, body, status), () => {});
       }
       return p;
     };
@@ -203,7 +249,7 @@
       this.addEventListener("load", () => {
         try {
           if (!interesting(this.__sunogenUrl)) return;
-          handle(this.__sunogenUrl, this.responseText);
+          handle(this.__sunogenUrl, this.responseText, this.status);
         } catch (err) {
           /* ignore */
         }

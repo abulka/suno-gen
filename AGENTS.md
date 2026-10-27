@@ -303,8 +303,11 @@ tools/                        Playwright harness (dev only)
 ## Known limitations / next steps
 
 - No "pre-flight" workspace resolution pass before job 1 (per-job verify exists).
-- Monitoring polls visible rows only; scroll away and it stops waiting (submit is
-  unaffected).
+- Monitoring is feed-first (`/a/api/feed/v3`), so off-screen rows are covered;
+  it expects 2 clips per job and logs a `batch-verify` report for any job that
+  produced 0 or 1 clip. The DOM poller remains as a fallback. If Suno's backend
+  rejects a generate request, the MAIN-world hook logs the error detail to the
+  panel. Source-row and Cover-menu steps retry once before skipping a job.
 - Two *distinct* clips with an identical title can't be told apart when re-finding
   the row (Suno rows expose only the title, no clip-id attr). Names/titles stay
   unique via `uniqueSourceNames`, but row selection may take the first match.

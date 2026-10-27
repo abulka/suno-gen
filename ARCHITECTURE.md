@@ -212,10 +212,15 @@ Per job (`runBatch` → `ensureCoverContext(job.source)` → fill → create):
    or `[aria-label="Create new workspace"]`, then **verify the pill text**;
    throw (stop before spending credits) if it didn't change.
 10. `clickCreate()` → `button[aria-label="Create song"]`.
-11. After all jobs, `monitorJobs()` polls `.clip-row[data-clip-status]` for the job
-    titles and emits `queued → streaming → complete`. The panel's `logStatus()`
-    dedupes these against the MAIN-world network hook (same titles/statuses) and
-    filters to the current batch, so each transition logs once.
+11. After all jobs, `monitorJobs()` first polls the library feed
+    (`/a/api/feed/v3`, paged by `catalog.js:recentClips`) so off-screen clips,
+    error statuses and missing siblings are included. It expects **2 clips per
+    job** (4 for two jobs sharing a title), waits a short grace period for late
+    siblings, then emits `batch-verify` with per-title `found/expected` counts
+    and any `metadata.error_type`/`error_message`. Falls back to polling visible
+    `.clip-row[data-clip-status]` rows if the feed is unavailable. The panel's
+    `logStatus()` dedupes transitions against the MAIN-world network hook and
+    filters to the current batch, so each logs once.
 
 ## Confirmed Suno DOM reference (Sep 2026)
 
