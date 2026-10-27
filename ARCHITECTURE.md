@@ -90,6 +90,7 @@ Panel → content (`chrome.tabs.sendMessage`, auto-injects + retries on failure)
 | `SUNOGEN_RECORD_START` / `SUNOGEN_RECORD_STOP` | click/hover recorder |
 | `SUNOGEN_PREVIEW` | build jobs without DOM |
 | `SUNOGEN_RUN_BATCH` | run the batch (`config`, incl. `dryRun`) |
+| `SUNOGEN_COLLECT_WORKSPACES` | full workspace list for the catalogue export (see below) |
 
 Content → background: `SUNOGEN_CLIP_TITLES` (`{items:[{id,title}]}`) keeps the
 service worker's title→id map current for filename-based download matching.
@@ -97,7 +98,8 @@ service worker's title→id map current for filename-based download matching.
 Content → panel (`chrome.runtime.sendMessage`, always `{type:"SUNOGEN_EVENT",
 event, ...}`): `pick-armed`, `pick-cancelled`, `pick-miss`, `source-picked`,
 `record-started`, `job-preview`, `job-start`, `job-submitted`, `job-error`,
-`monitor-start`, `job-status`, `batch-complete`, `page` (page-hook payload).
+`monitor-start`, `job-status`, `batch-complete`, `catalog-progress`, `page`
+(page-hook payload).
 
 page-hook → content: `window.postMessage({source:"sunogen-page", payload})` where
 payload is:
@@ -225,6 +227,42 @@ readable.
 `data-testid="clip-row"`, buttons titled "Download MP3 via Suno (S)", etc.
 (Suno Manager V3 — its green "Saved" chip comes from live `chrome.downloads`
 tracking only; that's the behaviour `row-indicators.js` improves on.)
+
+## Workspace list for the catalogue export (`catalog.js`)
+
+The "Export catalog JSON" tool needs *every* workspace, with ids. Two facts
+decide the implementation:
+
+1. **The picker cannot be trusted as a source of the full list.** It renders 20
+   rows on open and appends the next 20 only when the list is scrolled to the
+   bottom (the app fetches one page per arrival). Scraping its DOM therefore
+   captures whatever the user/scroll loop happened to load — a 215-workspace
+   account exported 100 rows this way. It is also slow (11 × scroll + wait).
+2. **Suno calls workspaces "projects"** and lists them all through one endpoint:
+
+   ```
+   GET /a/api/project/me?sort=max_created_at_last_updated_clip
+                         &show_trashed=false&exclude_shared=false&page=N
+   → { num_total_results: 215, current_page: N,
+       projects: [{ id, name, clip_count, created_at, last_updated_clip, … }] }
+   ```
+
+   20 rows per page. `num_total_results` on page 1 gives the page count, so
+   pages 2..N are fetched four at a time (~2 s for 215 workspaces).
+
+The endpoint wants `Authorization: Bearer <clerk JWT>`. Suno also keeps that JWT
+in the JS-readable `__session` cookie, so `catalog.js` reads it at export time
+(always fresh — a captured header would expire) and issues the requests from the
+content script (same origin, verified working in an isolated world).
+
+If the API path throws (signed out, endpoint renamed), `catalog.js` falls back to
+the picker: click `S.findWorkspaceTrigger()`, scope to the `[role="dialog"]`
+holding the search input, clear any stale filter, then repeatedly
+`scrollTop = scrollHeight` and wait for the row count to grow, up to 80 rounds.
+Rows are `button > span` with text `<name> (N clips)` (legacy) or
+`<name>` + `N songs · …` (newer). Escape closes the popover again. The panel
+shows `catalog-progress` events while this runs and the status line reports which
+path was used, so a partial list is visible rather than silent.
 
 ## Debugging & testing techniques (why the harness is built this way)
 

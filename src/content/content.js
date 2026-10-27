@@ -343,6 +343,21 @@
 
     SUNOGEN_RECORD_STOP: () => ({ ok: true, recording: stopRecording() }),
 
+    SUNOGEN_COLLECT_WORKSPACES: async () => {
+      const Catalog = globalThis.SunoGenCatalog;
+      if (!Catalog) throw new Error("Catalog helper not loaded — reload the extension.");
+      const res = await Catalog.collectWorkspaces({
+        onProgress: (p) =>
+          emit({
+            event: "catalog-progress",
+            source: p.source,
+            done: p.done,
+            total: p.total
+          })
+      });
+      return Object.assign({ ok: true }, res);
+    },
+
     SUNOGEN_PREVIEW: (msg) => ({ ok: true, jobs: Flow.buildJobs(msg.config) }),
 
     SUNOGEN_RUN_BATCH: async (msg) => {

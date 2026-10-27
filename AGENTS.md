@@ -55,6 +55,7 @@ npm run chrome              # launches debuggable Chrome (tools/.chrome-profile)
 npm run inspect             # dump selector inventory of the live create page
 npm run cover -- --title="two days"        # drive Cover flow, dump menu + form
 node tools/probe.js --url=https://suno.com/me --inject '<js>'
+node tools/probe-catalog.js                  # exercise the catalogue workspace collector (API + picker)
 node tools/test-flow.js --title="two days" --style="..." --song="..." --ws="26-9 Mashes"
 node tools/test-flow.js ... --submit=yes   # ACTUALLY submits (spends credits)
 node tools/test-flow.js ... --batch=yes    # runs a 2-preset batch via runBatch
@@ -267,6 +268,7 @@ src/background/service-worker.js  defaults, side-panel behavior, getTab relay, l
 src/panel/                    side panel UI (batch, presets, preview, Tools)
 src/content/selectors.js      ALL Suno selectors + resilient lookup/helpers
 src/content/cover-flow.js     the flow: open cover, fill badges, workspace, create, monitor
+src/content/catalog.js        full workspace list for the catalogue export (project API + picker fallback)
 src/content/content.js        messaging, pick-source, recorder, page-hook relay
 src/content/row-indicators.js per-row unlock + download badges (CSS beside it)
 src/inject/page-hook.js       MAIN-world fetch/XHR observer: clip status + download metadata

@@ -42,6 +42,29 @@ out not only which Suno songs have been unlocked for download, but also which of
 those songs have been found on your local disk, matched against the online Suno
 song UUIDs embedded in the downloaded audio files.
 
+### Catalogue export
+
+**Tools → Export catalog JSON** downloads `suno-catalog.json` for the
+Music workflow app at `~/Devel/ai/suno-workflow`. It contains:
+
+- **presets** — name, style code, style prompt and workspace override (already in
+  `chrome.storage.local`);
+- **workspaces** — id, name, clip count and timestamps for *every* workspace.
+  Suno calls them "projects". The exporter pages through the same endpoint the
+  "Save to…" picker uses (`/a/api/project/me`, 20 rows per page, authed with the
+  session JWT Suno keeps in the `__session` cookie), so the list is complete and
+  takes a second or two — the progress line in the panel shows how many rows are
+  in. Scraping the picker alone only ever sees the rows you have scrolled past,
+  so if the endpoint is unavailable (e.g. signed out) the exporter falls back to
+  opening the picker, scrolling it to the end and pressing Escape; that path is
+  best-effort and the status line says so;
+- **downloadedClips** — clip UUID → on-disk path from the authoritative folder
+  scan.
+
+The app imports this in its **Styles** tab. Clip UUIDs give exact matching
+between Suno and files on disk; presets give the real style vocabulary and
+prompts. No per-workspace song drilling is needed.
+
 ## Download badges
 
 Suno Generator injects small badges onto each clip's artwork in the Suno clip
@@ -209,6 +232,7 @@ src/background/service-worker.js     defaults, side-panel behavior, download tra
 src/panel/                           side panel UI (batch, presets, preview, Tools)
 src/content/selectors.js             all Suno selectors + resilient lookup helpers
 src/content/cover-flow.js            the flow: open cover, fill, workspace, create, monitor
+src/content/catalog.js               full workspace list for the catalogue export
 src/content/content.js               messaging, pick-source, recorder, page-hook relay
 src/content/row-indicators.js(.css)  per-row unlock/upload, history, and on-disk badges
 src/inject/page-hook.js              MAIN-world network observer (status + download metadata)

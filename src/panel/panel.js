@@ -27,6 +27,7 @@
   let lastStatusByTitle = new Map();
   let pickMode = false;
   let pickMultiple = false;
+  let exportingCatalog = false;
 
   // ---------- storage ----------
 
@@ -560,6 +561,7 @@
     "src/shared/title.js",
     "src/content/selectors.js",
     "src/content/cover-flow.js",
+    "src/content/catalog.js",
     "src/content/content.js",
     "src/content/row-indicators.js"
   ];
@@ -1204,6 +1206,93 @@
       if (scanState) scanState.cancelled = true;
     });
 
+    $("export-catalog").addEventListener("click", async () => {
+      const status = $("export-status");
+      const btn = $("export-catalog");
+      const setStatus = (text) => {
+        if (status) status.textContent = text;
+      };
+      if (exportingCatalog) return;
+      exportingCatalog = true;
+      if (btn) btn.disabled = true;
+      try {
+        setStatus("Reading the workspace list from Suno…");
+        const store = await chrome.storage.local.get(["presets", "downloadedClips"]);
+        let collected = { workspaces: [], source: null, warning: null };
+        try {
+          const res = await sendToContent("SUNOGEN_COLLECT_WORKSPACES");
+          if (res && res.ok) collected = res;
+          else collected.warning = (res && res.error) || "No response from the Suno tab.";
+        } catch (err) {
+          collected.warning = String((err && err.message) || err);
+        }
+        const workspaces = (collected.workspaces || [])
+          .filter((w) => w && w.name)
+          .map((w) => ({
+            id: w.id,
+            name: w.name,
+            clipCount: w.clipCount,
+            createdAt: w.createdAt,
+            lastUpdatedAt: w.lastUpdatedAt
+          }));
+        const presets = (store.presets || []).map((p) => ({
+          id: p.id,
+          name: p.name,
+          styleCode: p.styleCode,
+          stylePrompt: p.stylePrompt,
+          workspaceOverride: p.workspaceOverride || ""
+        }));
+        const downloadedClips = Object.entries(store.downloadedClips || {})
+          .map(([clipId, entry]) => ({
+            clipId,
+            path: (entry && entry.disk && entry.disk.path) || "",
+            count: entry && entry.disk ? entry.disk.count : undefined,
+            at: entry && entry.disk ? entry.disk.at : undefined
+          }))
+          .filter((c) => c.path);
+        const payload = {
+          schema: "suno-catalog/v1",
+          exportedAt: new Date().toISOString(),
+          presets,
+          workspaces,
+          downloadedClips
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "suno-catalog.json";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        const parts = [
+          `Exported ${presets.length} presets, ${workspaces.length} workspaces, ${downloadedClips.length} on-disk clips.`
+        ];
+        if (collected.source === "api") {
+          parts.push("Workspaces read from Suno's project API (complete list).");
+        } else if (collected.source === "dom") {
+          parts.push("Workspaces scraped from the picker — may be incomplete.");
+        } else if (collected.warning) {
+          parts.push("No workspace list: " + collected.warning);
+        }
+        if (collected.warning && collected.source === "dom") parts.push(collected.warning);
+        if (!workspaces.length && !collected.warning) {
+          parts.push("Open a Suno page with the create form and export again.");
+        }
+        setStatus(parts.join(" "));
+        logLine(
+          "Catalog exported (" + workspaces.length + " workspaces" + (collected.source ? " via " + collected.source : "") + ").",
+          workspaces.length ? "ok" : "err"
+        );
+      } catch (err) {
+        setStatus("Export failed: " + String((err && err.message) || err));
+        logLine("Catalog export failed: " + String((err && err.message) || err), "err");
+      } finally {
+        exportingCatalog = false;
+        if (btn) btn.disabled = false;
+      }
+    });
+
     const copyLog = async () => {
       const text =
         $("log").innerText +
@@ -1322,6 +1411,14 @@
       logStatus(msg.title, msg.status);
     } else if (msg.event === "batch-complete") {
       logLine("Batch complete.");
+    } else if (msg.event === "catalog-progress") {
+      if (!exportingCatalog) return;
+      const status = $("export-status");
+      if (!status) return;
+      const label = msg.source === "dom" ? "Reading the workspace picker" : "Reading workspaces from Suno";
+      status.textContent = msg.total
+        ? `${label}… ${msg.done}/${msg.total}`
+        : `${label}… ${msg.done || 0}`;
     } else if (msg.event === "page") {
       renderPageEvent(msg.payload);
     }
