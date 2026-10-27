@@ -412,6 +412,7 @@
         emit({
           event: "title-repair-progress",
           phase: p.phase,
+          term: p.term,
           done: p.done,
           total: p.total
         })

@@ -89,15 +89,16 @@ export instead of silently missing songs.
 
 ### Title repair
 
-**Tools → Title repair** finds generated covers whose song name leaked one of the
-processing markers you add to source filenames (`mangled`, `mangled2`, …). It
-searches your library for the marker, maps each cover back to its source clip
-through Suno's own `metadata.cover_clip_id`, and shows grouped `old → new` titles
-with checkboxes and editable text. Apply renames every selected clip via Suno's
-`set_metadata` endpoint (titles only). Old titles are remembered as aliases so
-files downloaded before the rename still match; the UUID embedded in the audio
-keeps disk tracking exact regardless. Suno's workspace view caches clip titles
-in memory, so use **Reload Suno page** (or hard-reload the tab) after applying.
+**Tools → Title repair** finds generated covers whose song name leaked a
+processing/fragment marker (`mangled`, `mangled2`, `frag1`, `fragment1`, …). It
+searches your library for the comma-separated terms (default `mangled, frag`),
+maps each cover back to its source clip through Suno's own
+`metadata.cover_clip_id`, and shows grouped `old → new` titles with checkboxes
+and editable text. Apply renames every selected clip via Suno's `set_metadata`
+endpoint (titles only). Old titles are remembered as aliases so files downloaded
+before the rename still match; the UUID embedded in the audio keeps disk tracking
+exact regardless. Suno's workspace view caches clip titles in memory, so use
+**Reload Suno page** (or hard-reload the tab) after applying.
 
 ## Download badges
 
@@ -132,8 +133,10 @@ clips by the Suno UUID embedded in the audio metadata. See
 - **Naming conventions** — automatic titles and workspace names (see above).
 - **Batch engine** — expands *sources × presets* into jobs, fills the create
   form, selects/creates and verifies the workspace, and submits.
-- **Status monitoring** — watches each job through `queued → streaming →
-  complete`, deduped across the DOM poll and a network hook.
+- **Status monitoring** — feed-first verification expects 2 clips per job,
+  flags 1/2 and 0/2 titles as `partial`/`missing`, and **auto-retries short
+  titles once** (a 1/2 title becomes 3 clips; delete the extra). Falls back to
+  DOM polling if the feed is unavailable.
 - **Folder scan** — optionally point it at your downloads folder to mark which
   clips are on disk, matched by the clip id embedded in the audio file.
 

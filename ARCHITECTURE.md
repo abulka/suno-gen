@@ -135,14 +135,18 @@ functions in `selectors.js` rather than fragile CSS.
   `buildJobs` uses step **2 per style** (Suno always makes 2 clips per Create, so
   the 2nd is left for manual editing).
 - `deriveSongName(title)` — from a picked clip's aria-label: drop `· <uuid>`,
-  split on `" - "`, drop trailing processing markers (`mangled`, `mangled2`, …
-  plus an optional `-a1b2` dedupe suffix), strip a leading `YYYY-MM-DD`/`YY-M`
-  date, take the last ` - ` segment, else strip a leading `take-rating` token.
-  `"2026-07-28 arlie · <uuid>"` → `"arlie"`; `"2026-06-28 fine - mangled"` →
-  `"fine"`; `"seqout mangled2"` → `"seqout"`.
-- `stripProcessingMarker`, `isProcessingMarker`, `repairSongName`,
-  `splitTitle`, `joinTitle` — shared marker/repair helpers used by the panel's
-  bulk title repair tool.
+  split on `" - "`, drop trailing processing/fragment markers (`mangled`,
+  `mangled2`, `frag1`, `fragment1`, … plus an optional `-a1b2` dedupe suffix).
+  If a marker was removed, keep the **whole remaining descriptive name**
+  (`"multiple guitars - maton arrives - frag1"` → `"multiple guitars - maton
+  arrives"`); otherwise take the last ` - ` segment (`"70s nu jam - truck"` →
+  `"truck"`). Then strip leading `YYYY-MM-DD`/`YY-M` and date/take prefixes.
+  `"2026-06-28 fine - mangled"` → `"fine"`; `"post a30p dedication 01 - frag1
+  mangled"` → `"post a30p dedication 01"`.
+- `isProcessingMarker`, `isFragmentMarker`, `stripProcessingMarker`,
+  `stripFragmentMarker`, `stripTrailingMarker`, `hasTrailingMarker`,
+  `repairSongName`, `splitTitle`, `joinTitle` — shared marker/repair helpers
+  used by the panel's bulk title repair tool and load-time source migration.
 - `uniqueSourceNames(sources)` — per-source name (`songName` override → derived),
   disambiguating duplicates with a 4-char clip-id suffix. Used by the panel list,
   the preview and `buildJobs` so all three agree.
@@ -162,7 +166,8 @@ The repair tool is the only writer of clip titles. It uses the same
 - `POST /a/api/search/` body
   `{search_queries:[{name:"library_song", search_type:"library_song", term,
   from_index, size:20, rank_by:"most_recent"}]}`. `size` caps at 20; page with
-  `from_index` until `total_hits`. Search hits include `metadata.cover_clip_id`.
+  `from_index` until `total_hits`. The repair input accepts comma-separated
+  terms (default `mangled, frag`) and merges hits by clip id.
 - `GET /a/api/clip/{id}` for a clip/source title (source of a cover).
 - `POST /a/api/gen/{id}/set_metadata/` body `{title}`. Verified live: a partial
   payload changes only the title; lyrics, tags, cover image and display tags are
@@ -214,13 +219,15 @@ Per job (`runBatch` → `ensureCoverContext(job.source)` → fill → create):
 10. `clickCreate()` → `button[aria-label="Create song"]`.
 11. After all jobs, `monitorJobs()` first polls the library feed
     (`/a/api/feed/v3`, paged by `catalog.js:recentClips`) so off-screen clips,
-    error statuses and missing siblings are included. It expects **2 clips per
-    job** (4 for two jobs sharing a title), waits a short grace period for late
-    siblings, then emits `batch-verify` with per-title `found/expected` counts
-    and any `metadata.error_type`/`error_message`. Falls back to polling visible
-    `.clip-row[data-clip-status]` rows if the feed is unavailable. The panel's
-    `logStatus()` dedupes transitions against the MAIN-world network hook and
-    filters to the current batch, so each logs once.
+    error statuses and missing siblings are included. It expects **2 good clips
+    per job** (4 for two jobs sharing a title), waits a short grace period, and
+    reports `found/expected` plus any `metadata.error_type`/`error_message`.
+    Short titles are **auto-retried once** (`selectRetryJobs`, override with
+    `settings.autoRetryPasses`) by re-running the relevant jobs, then verified
+    again. Falls back to polling visible `.clip-row[data-clip-status]` rows if
+    the feed is unavailable. The panel's `logStatus()` dedupes transitions and
+    ignores per-clip page-hook statuses while the feed monitor is active, so a
+    sibling's `complete` cannot hide an errored clip.
 
 ## Confirmed Suno DOM reference (Sep 2026)
 

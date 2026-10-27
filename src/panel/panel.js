@@ -24,6 +24,7 @@
   let diagnosticsBlob = "";
   let batchRunning = false;
   let batchCallActive = false;
+  let feedMonitorActive = false;
   let activeJobTitles = new Set();
   let lastStatusByTitle = new Map();
   let pickMode = false;
@@ -53,9 +54,9 @@
     state.sources = state.sources.map((source) => {
       if (!source || !source.title) return source;
       const stored = String(source.songName || "").trim();
-      const looksDerivedOrLeaked = !stored || T.stripProcessingMarker(stored) !== stored;
+      const looksDerivedOrLeaked = !stored || T.hasTrailingMarker(stored);
       if (!looksDerivedOrLeaked) return source;
-      const titleHasMarker = T.stripProcessingMarker(source.title) !== String(source.title).trim();
+      const titleHasMarker = T.hasTrailingMarker(source.title);
       if (!titleHasMarker) return source;
       const derived = T.deriveSongName(source.title);
       if (!derived) return source;
@@ -1362,11 +1363,40 @@
   function logStatus(title, status, opts) {
     const key = String(title || "").trim();
     if (!key || !status) return;
-    if (opts && opts.fromPage && !batchRunning) return;
+    if (opts && opts.fromPage) {
+      if (!batchRunning) return;
+      // While the feed monitor is active it is authoritative: the page hook
+      // reports per-clip statuses, so a sibling's "complete" must not hide a
+      // clip that errored.
+      if (feedMonitorActive) return;
+    }
     if (activeJobTitles.size && !activeJobTitles.has(key)) return;
-    if (lastStatusByTitle.get(key) === status) return;
-    lastStatusByTitle.set(key, status);
-    logLine("  " + key + " → " + status, status === "complete" ? "ok" : undefined);
+    const previous = String(lastStatusByTitle.get(key) || "");
+    // A sibling clip completing must not erase an error from the other clip.
+    // The feed monitor (fromFeed) is allowed to settle it after a retry.
+    if (!opts || !opts.fromFeed) {
+      if (status === "complete" && previous.startsWith("error")) return;
+    }
+    const counts =
+      opts && (opts.found != null || opts.expected != null)
+        ? " (" +
+          (opts.found != null ? opts.found : "?") +
+          "/" +
+          (opts.expected != null ? opts.expected : "?") +
+          ")"
+        : "";
+    const showCounts = status === "partial" || status === "missing";
+    const dedupe = status + (showCounts ? counts : "");
+    if (lastStatusByTitle.get(key) === dedupe) return;
+    lastStatusByTitle.set(key, dedupe);
+    const label = status + (showCounts ? counts : "");
+    const cls =
+      status === "complete"
+        ? "ok"
+        : status === "error" || status === "failed" || status === "partial" || status === "missing"
+        ? "err"
+        : undefined;
+    logLine("  " + key + " → " + label, cls);
   }
 
   async function copyText(text) {
@@ -1739,6 +1769,7 @@
       } finally {
         batchRunning = false;
         batchCallActive = false;
+        feedMonitorActive = false;
         updateRunEnabled();
       }
     });
@@ -1776,10 +1807,11 @@
     } else if (msg.event === "title-repair-progress") {
       if (!repairScanning) return;
       if (msg.phase === "search") {
+        const term = msg.term ? '"' + msg.term + '" ' : "";
         setRepairStatus(
           msg.total
-            ? "Searching Suno… " + msg.done + "/" + msg.total + " matching clip(s)"
-            : "Searching Suno… " + (msg.done || 0)
+            ? "Searching Suno for " + term + "… " + msg.done + "/" + msg.total + " matching clip(s)"
+            : "Searching Suno for " + term + "… " + (msg.done || 0)
         );
       } else if (msg.phase === "sources") {
         setRepairStatus(
@@ -1793,12 +1825,21 @@
         logLine("  rename failed: " + msg.result.title + " — " + msg.result.error, "err");
       }
     } else if (msg.event === "job-start") {
-      if (msg.index === 0) {
+      if (!msg.retry && msg.index === 0) {
         activeJobTitles = new Set();
         lastStatusByTitle = new Map();
       }
       activeJobTitles.add(msg.job.title);
-      logLine("[" + (msg.index + 1) + "/" + msg.total + "] " + msg.job.title + "  → " + msg.job.workspace);
+      logLine(
+        (msg.retry ? "[retry " : "[") +
+          (msg.index + 1) +
+          "/" +
+          msg.total +
+          "] " +
+          msg.job.title +
+          "  → " +
+          msg.job.workspace
+      );
     } else if (msg.event === "job-submitted") {
       logLine("  submitted → " + msg.job.workspace, "ok");
     } else if (msg.event === "job-error") {
@@ -1806,17 +1847,49 @@
     } else if (msg.event === "job-preview") {
       logLine("  preview: " + msg.job.title);
     } else if (msg.event === "monitor-start") {
-      logLine("Waiting for " + msg.count + " generation(s)…");
+      feedMonitorActive = true;
+      logLine(
+        "Waiting for " +
+          msg.count +
+          (msg.retry ? " retry generation(s)…" : " generation(s)…")
+      );
     } else if (msg.event === "job-status") {
-      logStatus(msg.title, msg.status);
+      logStatus(msg.title, msg.status, {
+        found: msg.found,
+        expected: msg.expected,
+        fromFeed: true
+      });
+    } else if (msg.event === "batch-retry-start") {
+      logLine(
+        "Auto-retry: re-running " +
+          msg.count +
+          " short job(s). Each is a normal Create (credits) and makes 2 clips, so a 1/2 title becomes 3 (delete the extra)."
+      );
+      (Array.isArray(msg.jobs) ? msg.jobs : []).forEach((j) =>
+        logLine(
+          "  retry " +
+            j.title +
+            " — " +
+            (j.found || 0) +
+            "/" +
+            (j.expected || 2) +
+            " clip(s)"
+        )
+      );
     } else if (msg.event === "batch-verify") {
       const jobs = Array.isArray(msg.jobs) ? msg.jobs : [];
       const short = jobs.filter((j) => Number(j.found) < Number(j.expected));
+      const prefix = msg.final
+        ? "Final verification: "
+        : msg.attempt
+        ? "Verification (retry " + msg.attempt + "): "
+        : "Verification: ";
       if (!short.length) {
-        logLine("Verified: every submitted job produced 2 clip(s).", "ok");
+        logLine(prefix + "every submitted job has at least 2 clips.", "ok");
       } else {
         logLine(
-          "Verification: " + short.length + " job(s) produced fewer than 2 clips:",
+          prefix + short.length + " job(s) produced fewer than 2 clips" +
+            (msg.final ? ":" : " — retrying automatically…"),
           "err"
         );
         short.forEach((j) =>
@@ -1831,7 +1904,14 @@
           "err"
         )
       );
+    } else if (msg.event === "batch-verify-unavailable") {
+      feedMonitorActive = false;
+      logLine(
+        "Verification unavailable (library feed failed) — fell back to polling visible rows.",
+        "err"
+      );
     } else if (msg.event === "batch-complete") {
+      feedMonitorActive = false;
       logLine("Batch complete.");
     } else if (msg.event === "catalog-progress") {
       if (!exportingCatalog) return;

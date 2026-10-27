@@ -200,12 +200,15 @@ extension loaded, or the MCP `--extension` flag.
   `clipId`. Each source's Song name is derived (`title.js:deriveSongName`); with
   >1 source the Song name field is disabled and names are per-source
   (`title.js:uniqueSourceNames`, duplicates get a 4-char clip-id suffix).
-- **Processing markers are not names:** `mangled`, `mangled2`, `mangled3`, …
-  (with a ` - ` or space before it, and an optional old `-a1b2` dedupe suffix)
-  are the user's filter/EQ tags. `deriveSongName` strips them, so
-  `2026-06-28 fine - mangled` → `fine` and `seqout mangled2` → `seqout`. At panel
-  load, stored sources whose `songName` leaked a marker are recomputed. Do not
-  reintroduce the marker into the title or workspace.
+- **Processing/fragment markers are not names:** `mangled`, `mangled2`, `frag1`,
+  `frag2`, `fragment1`, … (with a ` - ` or space before them, and an optional old
+  `-a1b2` dedupe suffix) are filter/EQ/fragment tags. `deriveSongName` strips
+  them. If a trailing marker is removed, the **whole remaining descriptive name**
+  is kept (`multiple guitars - maton arrives - frag1` → `multiple guitars - maton
+  arrives`); otherwise the last ` - ` segment is the name (`70s nu jam - truck` →
+  `truck`). `2026-06-28 fine - mangled` → `fine`. At panel load, stored sources
+  whose `songName` leaked a marker are recomputed. Do not reintroduce markers
+  into the title or workspace.
 - **Run hardening:** clicking **Generate batch** disarms pick mode (asking the
   page, since the panel's cached state can be stale), ignores repeat clicks while
   a batch call is in flight, and ignores `source-picked` events during the batch.
@@ -218,12 +221,12 @@ extension loaded, or the MCP `--extension` flag.
 - **Resolution order** (`title.js:resolveWorkspace`): preset override → batch
   workspace → derived from date+name.
 - **Title repair** (Tools → Title repair): searches the library via
-  `POST /a/api/search/` (`library_song`, term default `mangled`), keeps generated
-  covers with a template title, resolves each via `metadata.cover_clip_id` /
-  `edited_clip_id` (`GET /a/api/clip/{id}`), and proposes `old → new` names.
-  Existing names that merely end with a marker keep their formatting; only a name
-  that is exactly the marker falls back to the source-derived name
-  (`title.js:repairSongName`). Preview groups are editable/uncheckable; applying
+  `POST /a/api/search/` (`library_song`; comma-separated terms, default
+  `mangled, frag`), keeps generated covers with a template title, resolves each
+  via `metadata.cover_clip_id` / `edited_clip_id` (`GET /a/api/clip/{id}`), and
+  proposes `old → new` names. Existing names that merely end with a marker keep
+  their formatting; a name that is only a marker/fragment falls back to the
+  source-derived name (`title.js:repairSongName`). Preview groups are editable/uncheckable; applying
   renames every selected clip with `POST /a/api/gen/{id}/set_metadata/`
   (`{title}` only — a live test confirmed lyrics/tags/cover/metadata survive).
   Old titles are persisted in `titleAliases` so filenames downloaded before the
@@ -304,10 +307,13 @@ tools/                        Playwright harness (dev only)
 
 - No "pre-flight" workspace resolution pass before job 1 (per-job verify exists).
 - Monitoring is feed-first (`/a/api/feed/v3`), so off-screen rows are covered;
-  it expects 2 clips per job and logs a `batch-verify` report for any job that
-  produced 0 or 1 clip. The DOM poller remains as a fallback. If Suno's backend
-  rejects a generate request, the MAIN-world hook logs the error detail to the
-  panel. Source-row and Cover-menu steps retry once before skipping a job.
+  it expects 2 clips per job, marks titles that have only 1 (or 0) as
+  `partial`/`missing`, and **auto-retries short titles once** by re-running the
+  corresponding jobs (Suno makes 2 clips per Create, so a 1/2 title becomes 3;
+  delete the extra). A final `batch-verify` report lists anything still short.
+  The DOM poller remains as a fallback. If Suno's backend rejects a generate
+  request, the MAIN-world hook logs the error detail to the panel. Source-row and
+  Cover-menu steps retry once before skipping a job.
 - Two *distinct* clips with an identical title can't be told apart when re-finding
   the row (Suno rows expose only the title, no clip-id attr). Names/titles stay
   unique via `uniqueSourceNames`, but row selection may take the first match.

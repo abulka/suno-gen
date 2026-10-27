@@ -151,11 +151,11 @@
           </div>
           <div class="tools-subhead">Title repair</div>
           <div class="tools-actions">
-            <input id="repair-term" type="text" class="repair-term" value="mangled" title="Processing marker to search for and strip" />
+            <input id="repair-term" type="text" class="repair-term" value="mangled, frag" title="Marker(s) to search for and strip; comma-separated" />
             <button id="repair-scan" type="button" class="btn btn-sm">Scan titles</button>
           </div>
           <div id="repair-status" class="muted tools-hint">
-            Finds generated covers whose song name leaked a processing marker, maps each back to its source clip and proposes a corrected title.
+            Finds generated covers whose song name leaked a processing/fragment marker, maps each back to its source clip and proposes a corrected title. Separate multiple markers with commas.
           </div>
           <div id="repair-panel" hidden>
             <div id="repair-list" class="repair-list"></div>

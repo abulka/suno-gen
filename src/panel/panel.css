@@ -191,7 +191,7 @@ input:focus, textarea:focus { outline: 1px solid var(--accent); border-color: va
 .log .err { color: var(--err); }
 
 /* Title repair (Tools) */
-.repair-term { width: 92px; flex: 0 0 auto; padding: 4px 6px; font-size: 12px; }
+.repair-term { width: 140px; flex: 0 0 auto; padding: 4px 6px; font-size: 12px; }
 .repair-list {
   display: flex;
   flex-direction: column;

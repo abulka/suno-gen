@@ -32,6 +32,25 @@ eq(T.deriveSongName("2026-06-14 farm v2 mangled"), "farm v2", "space-separated m
 eq(T.deriveSongName("2026-07-24 seqout mangled2"), "seqout", "mangled2");
 eq(T.deriveSongName("2026-06-28 fine - mangled-8be1"), "fine", "dedupe suffix on marker");
 
+// --- fragment markers: keep the descriptive part ---
+eq(
+  T.deriveSongName("multiple guitars - maton arrives - frag1"),
+  "multiple guitars - maton arrives",
+  "frag1 drops only the fragment"
+);
+eq(
+  T.deriveSongName("post a30p dedication 01 - frag1 mangled"),
+  "post a30p dedication 01",
+  "frag1 + mangled"
+);
+eq(
+  T.deriveSongName("post a30p 70s - dedication 01 - frag1 mangled"),
+  "post a30p 70s - dedication 01",
+  "frag1 + mangled after a descriptor"
+);
+eq(T.deriveSongName("frag1"), "", "bare fragment is not a name");
+eq(T.isFragmentMarker("frag1-767f"), true, "dedupe suffix on fragment");
+
 // --- deriveSongName: existing conventions still work ---
 eq(T.deriveSongName("2026-06-27 real use"), "real use", "plain name");
 eq(T.deriveSongName("2026-06-15 70s zsil"), "70s zsil", "name starting with digits");
@@ -43,6 +62,7 @@ eq(T.deriveSongName("2026-07-28 arlie · bb7c68e4-1111-2222-3333-444444444444"),
 // --- sourceName ignores leaked marker overrides ---
 eq(T.sourceName({ title: "2026-06-28 fine - mangled", songName: "mangled" }), "fine", "stale marker override ignored");
 eq(T.sourceName({ title: "2026-06-28 fine - mangled", songName: "mangled-8be1" }), "fine", "stale dedupe override ignored");
+eq(T.sourceName({ title: "multiple guitars - maton arrives - frag1", songName: "frag1" }), "multiple guitars - maton arrives", "stale frag override ignored");
 eq(T.sourceName({ title: "2026-06-28 fine - mangled", songName: "my fine" }), "my fine", "real override kept");
 
 // --- title split/join ---
@@ -53,8 +73,10 @@ eq(T.splitTitle("post a30p 70s - dedication 01 - frag1 mangled").songName, "dedi
 // --- repairSongName ---
 eq(T.repairSongName("mangled-8be1", "fine"), "fine", "pure marker falls back to derived");
 eq(T.repairSongName("mangled", "anne"), "anne", "pure marker");
+eq(T.repairSongName("frag1-767f", "multiple guitars - maton arrives"), "multiple guitars - maton arrives", "pure fragment falls back to derived");
+eq(T.repairSongName("frag1", "post a30p dedication 01"), "post a30p dedication 01", "bare fragment falls back to derived");
 eq(T.repairSongName("seqout mangled2", "seqout"), "seqout", "strip marker, keep name");
-eq(T.repairSongName("dedication 01 - frag1 mangled", "frag1"), "dedication 01 - frag1", "preserve inner separators");
+eq(T.repairSongName("dedication 01 - frag1 mangled", "frag1"), "dedication 01", "strip both markers");
 eq(T.repairSongName("fine", "fine"), "fine", "no marker");
 
 // --- full title build ---

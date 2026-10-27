@@ -469,11 +469,28 @@
    * a song-name separator, plus the title of the clip they cover.
    */
   async function collectTitleRepairs(term, onProgress) {
-    const search = await searchLibrarySongs(term, (p) => {
-      if (onProgress) onProgress({ phase: "search", done: p.done, total: p.total });
-    });
+    const terms = String(term || "")
+      .split(/[,;]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (!terms.length) throw new Error("Enter a search term (e.g. mangled, frag).");
 
-    const candidates = search.clips.filter((clip) => {
+    const byId = new Map();
+    let totalHits = 0;
+    for (const q of terms) {
+      const search = await searchLibrarySongs(q, (p) => {
+        if (onProgress) {
+          onProgress({ phase: "search", term: q, done: p.done, total: p.total });
+        }
+      });
+      totalHits += search.total;
+      for (const clip of search.clips) {
+        if (clip && clip.id && !byId.has(clip.id)) byId.set(clip.id, clip);
+      }
+    }
+    const clips = [...byId.values()];
+
+    const candidates = clips.filter((clip) => {
       const meta = clip && clip.metadata && typeof clip.metadata === "object" ? clip.metadata : {};
       if (meta.type === "upload" || meta.type === "upsample") return false;
       return String((clip && clip.title) || "").indexOf(" - ") !== -1;
@@ -534,7 +551,7 @@
       };
     });
 
-    return { rows: rows, scanned: search.clips.length, totalHits: search.total };
+    return { rows: rows, scanned: clips.length, totalHits: totalHits };
   }
 
   /** Rename one clip. Retries throttling / transient server errors. */

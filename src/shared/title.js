@@ -75,22 +75,27 @@
    */
   const MARKER_RE = /(?:^|[\s\-–—])(mangled\d*)(?:[-_][0-9a-z]{4,8})?$/i;
 
+  /**
+   * Fragment markers ("frag1", "frag2", "fragment1") indicate a fragment of a
+   * longer idea; they are not the song name. Without this, a source like
+   * "multiple guitars - maton arrives - frag1" derives to just "frag1" and the
+   * descriptive part is lost.
+   */
+  const FRAGMENT_RE = /(?:^|[\s\-–—])(frag(?:ment)?\d+)(?:[-_][0-9a-z]{4,8})?$/i;
+
   /** True when the whole value is just a processing marker. */
   function isProcessingMarker(text) {
     return /^mangled\d*(?:[-_][0-9a-z]{4,8})?$/i.test(String(text || "").trim());
   }
 
-  /**
-   * Remove a trailing processing marker (and an optional clip-id suffix):
-   *   "mangled-8be1"                  -> ""
-   *   "mangled2"                      -> ""
-   *   "seqout mangled2"               -> "seqout"
-   *   "dedication 01 - frag1 mangled" -> "dedication 01 - frag1"
-   *   "farm v2 mangled"               -> "farm v2"
-   */
-  function stripProcessingMarker(text) {
+  /** True when the whole value is just a fragment marker. */
+  function isFragmentMarker(text) {
+    return /^frag(?:ment)?\d+(?:[-_][0-9a-z]{4,8})?$/i.test(String(text || "").trim());
+  }
+
+  function stripByRe(text, re) {
     const s = String(text || "").trim();
-    const m = s.match(MARKER_RE);
+    const m = s.match(re);
     if (!m) return s;
     return s
       .slice(0, m.index)
@@ -99,7 +104,46 @@
   }
 
   /**
+   * Remove a trailing processing marker (and an optional clip-id suffix):
+   *   "mangled-8be1"                  -> ""
+   *   "mangled2"                      -> ""
+   *   "seqout mangled2"               -> "seqout"
+   *   "farm v2 mangled"               -> "farm v2"
+   */
+  function stripProcessingMarker(text) {
+    return stripByRe(text, MARKER_RE);
+  }
+
+  /** Remove a trailing fragment marker (and an optional clip-id suffix). */
+  function stripFragmentMarker(text) {
+    return stripByRe(text, FRAGMENT_RE);
+  }
+
+  /** Strip any trailing processing/fragment markers, repeatedly. */
+  function stripTrailingMarker(text) {
+    let s = String(text || "").trim();
+    for (let i = 0; i < 5; i++) {
+      const next = stripFragmentMarker(stripProcessingMarker(s));
+      if (next === s) break;
+      s = next;
+    }
+    return s;
+  }
+
+  /** True when applying either marker strip changes the value. */
+  function hasTrailingMarker(text) {
+    const s = String(text || "").trim();
+    return stripTrailingMarker(s) !== s;
+  }
+
+  /**
    * Derive a song name from a picked source's title.
+   *
+   * Rule: strip trailing processing/fragment markers. If a marker was removed,
+   * keep the whole remaining descriptive name ("multiple guitars - maton
+   * arrives - frag1" -> "multiple guitars - maton arrives"). Otherwise the last
+   * " - " segment is the song name ("70s nu jam - truck" -> "truck").
+   *
    *   "2026-07-28 arlie · bb7c68e4-…"          -> "arlie"
    *   "2026-08-28 70s nu jam - truck"          -> "truck"
    *   "2026-08-28 01-iii2 gm art jam - truck (x)"-> "truck (x)"
@@ -107,6 +151,8 @@
    *   "2026-06-28 fine - mangled"              -> "fine"
    *   "2026-06-28 - anne - mangled"            -> "anne"
    *   "2026-07-24 seqout mangled2"             -> "seqout"
+   *   "multiple guitars - maton arrives - frag1"   -> "multiple guitars - maton arrives"
+   *   "post a30p dedication 01 - frag1 mangled"    -> "post a30p dedication 01"
    */
   function deriveSongName(rawTitle) {
     let s = String(rawTitle || "").trim();
@@ -115,20 +161,45 @@
     s = s.replace(/\s+[0-9a-f]{8}-[0-9a-f-]{8,}$/i, "").trim();
 
     // Split on the song-name separator only. Dates use plain hyphens, so they
-    // survive this step. A trailing processing marker is not the song name.
+    // survive this step.
     const parts = s.split(" - ").map((p) => p.trim()).filter(Boolean);
-    while (parts.length > 1 && isProcessingMarker(parts[parts.length - 1])) parts.pop();
+    let droppedMarker = false;
 
-    if (parts.length > 1) {
+    // Peel trailing marker/fragment segments (and markers inside the last
+    // segment, e.g. "frag1 mangled").
+    while (parts.length) {
       const last = parts[parts.length - 1];
-      return stripProcessingMarker(last) || last;
+      if (isProcessingMarker(last) || isFragmentMarker(last)) {
+        parts.pop();
+        droppedMarker = true;
+        continue;
+      }
+      const stripped = stripTrailingMarker(last);
+      if (stripped !== last) {
+        droppedMarker = true;
+        if (!stripped || isProcessingMarker(stripped) || isFragmentMarker(stripped)) {
+          parts.pop();
+        } else {
+          parts[parts.length - 1] = stripped;
+        }
+        continue;
+      }
+      break;
     }
 
-    s = parts[0] || "";
-    s = s.replace(/^\d{4}-\d{1,2}-\d{1,2}\s*/, "");
+    if (!parts.length) return "";
+
+    if (!droppedMarker && parts.length > 1) {
+      return parts[parts.length - 1].trim();
+    }
+
+    s = parts.join(" - ");
+    // Strip a leading source date (with an optional following separator) and
+    // an old take/rating prefix.
+    s = s.replace(/^\d{4}-\d{1,2}-\d{1,2}\s*(?:[-–—]\s*)?/, "");
     s = s.replace(/^\d{1,2}-\d{1,2}\s+/, "");
     if (!s) return "";
-    s = stripProcessingMarker(s);
+    s = stripTrailingMarker(s);
     s = s.replace(/^\d{1,2}-[A-Za-z0-9]+\s*/, "");
     s = s.replace(/^\d{1,2}\s+/, "");
     return s.trim();
@@ -153,14 +224,17 @@
   /**
    * Repair an existing song-name part (used by the bulk title repair tool).
    * Prefer stripping the marker from the old name because that preserves any
-   * user formatting ("dedication 01 - frag1 mangled" -> "dedication 01 -
-   * frag1"). If the old name was only the marker ("mangled-8be1"), fall back
-   * to the name derived from the cover's source clip.
+   * user formatting ("post a30p 70s - dedication 01 - frag1 mangled" ->
+   * "dedication 01"). If the old name was only a marker/fragment
+   * ("mangled-8be1", "frag1-767f"), fall back to the name derived from the
+   * cover's source clip.
    */
   function repairSongName(oldSongName, derivedName) {
-    const cleaned = stripProcessingMarker(oldSongName);
-    if (cleaned) return cleaned;
-    return String(derivedName || "").trim();
+    const cleaned = stripTrailingMarker(oldSongName);
+    if (cleaned && !isProcessingMarker(cleaned) && !isFragmentMarker(cleaned)) {
+      return cleaned;
+    }
+    return String(derivedName || "").trim() || cleaned;
   }
 
   function buildWorkspace(cfg) {
@@ -172,10 +246,14 @@
   /** The name to use for a source: explicit override, else derived, else title. */
   function sourceName(source) {
     let override = (source && source.songName && String(source.songName).trim()) || "";
-    // A stored name that is only a leaked processing marker ("mangled",
-    // "mangled-8be1") is not a real override; derive from the title instead so
-    // a stale panel state can never reintroduce it.
-    if (override && isProcessingMarker(override)) override = "";
+    // A stored name that is only a leaked processing/fragment marker
+    // ("mangled", "mangled-8be1", "frag1") is not a real override; derive from
+    // the title instead so a stale panel state can never reintroduce it. A
+    // marker left at the end of a real name is stripped too.
+    if (override) {
+      override = stripTrailingMarker(override);
+      if (!override || isProcessingMarker(override) || isFragmentMarker(override)) override = "";
+    }
     return String(override || deriveSongName(source && source.title) || (source && source.title) || "").trim();
   }
 
@@ -229,7 +307,11 @@
     normalizeTake: normalizeTake,
     offsetTake: offsetTake,
     isProcessingMarker: isProcessingMarker,
+    isFragmentMarker: isFragmentMarker,
     stripProcessingMarker: stripProcessingMarker,
+    stripFragmentMarker: stripFragmentMarker,
+    stripTrailingMarker: stripTrailingMarker,
+    hasTrailingMarker: hasTrailingMarker,
     deriveSongName: deriveSongName,
     splitTitle: splitTitle,
     joinTitle: joinTitle,

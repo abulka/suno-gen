@@ -616,30 +616,43 @@
       let allTerminal = true;
       for (const [key, info] of expected) {
         const list = byTitle.get(key) || [];
-        if (list.length > info.count) info.count = list.length;
         const statuses = list.map((c) => String(c.status || "").toLowerCase());
+        const good = list.filter((c) => String(c.status || "").toLowerCase() === "complete").length;
+        if (good > info.count) info.count = good;
         let status = "submitted";
         if (!list.length) {
           status = Date.now() - started > noClipGraceMs ? "missing" : "submitted";
+        } else if (good >= info.expected) {
+          status = "complete";
         } else if (statuses.some((s) => s === "error" || s === "failed")) {
           status = "error";
-        } else if (statuses.every((s) => s === "complete")) {
-          status = "complete";
         } else if (statuses.some((s) => s === "streaming")) {
           status = "streaming";
-        } else {
+        } else if (statuses.some((s) => s === "queued" || s === "submitted")) {
           status = "queued";
+        } else {
+          // Every clip we have is complete, but fewer than this title should
+          // produce: Suno failed the sibling(s). Keep it visible as partial
+          // instead of letting a sibling's "complete" hide the gap.
+          status = "partial";
         }
 
         if (last.get(key) !== status) {
           last.set(key, status);
-          emit({ type: "job-status", title: info.title, status: status });
+          emit({
+            type: "job-status",
+            title: info.title,
+            status: status,
+            found: good,
+            expected: info.expected
+          });
         }
         if (
           status !== "complete" &&
           status !== "error" &&
           status !== "failed" &&
-          status !== "missing"
+          status !== "missing" &&
+          status !== "partial"
         ) {
           allTerminal = false;
         }
@@ -675,8 +688,7 @@
         });
       }
     }
-    emit({ type: "batch-verify", jobs: report, errors: errors });
-    return report;
+    return { report: report, errors: errors };
   }
 
   /**
@@ -724,24 +736,44 @@
     }
   }
 
-  async function runBatch(config, emit) {
-    const log = emit || (() => {});
+  /**
+   * Pick the subset of jobs needed to fill the short titles. Suno creates two
+   * clips per job, so a title missing one clip still needs one full job (and
+   * will end up with an extra clip).
+   */
+  function selectRetryJobs(jobs, short) {
+    const byTitle = new Map();
+    for (const job of jobs) {
+      const key = job.title.trim().toLowerCase();
+      const list = byTitle.get(key) || [];
+      list.push(job);
+      byTitle.set(key, list);
+    }
+    const retry = [];
+    for (const item of short) {
+      const key = String(item.title || "").trim().toLowerCase();
+      const list = byTitle.get(key) || [];
+      const need = Math.max(
+        1,
+        Math.ceil((Number(item.expected || 2) - Number(item.found || 0)) / 2)
+      );
+      for (let i = 0; i < need && i < list.length; i++) {
+        if (!retry.includes(list[i])) retry.push(list[i]);
+      }
+    }
+    return retry;
+  }
+
+  /** Submit a list of jobs (used for the batch and for auto-retries). */
+  async function executeJobs(jobs, config, log, opts) {
     const settings = config.settings || {};
     const delay = Math.max(0, settings.delayMs || 4000);
-    const jobs = buildJobs(config);
-
-    if (!jobs.length) throw new Error("No source(s)/presets selected.");
-    if (config.dryRun) {
-      for (const job of jobs) log({ type: "job-preview", job: job });
-      return jobs;
-    }
-
+    const retry = !!(opts && opts.retry);
     const results = [];
-    const batchStarted = Date.now();
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i];
       const preset = config.presets.find((p) => p.id === job.presetId);
-      log({ type: "job-start", index: i, total: jobs.length, job: job });
+      log({ type: "job-start", index: i, total: jobs.length, job: job, retry: retry });
       try {
         // Re-attach the cover for THIS job's source each time; Create may reset
         // the form and switching sources must actually swap the loaded audio.
@@ -751,20 +783,93 @@
         await fillLyrics(preset.lyrics || settings.lyricsText || "[instrumental]");
         await selectWorkspace(job.workspace);
         await clickCreate();
-        log({ type: "job-submitted", index: i, job: job });
+        log({ type: "job-submitted", index: i, job: job, retry: retry });
         results.push({ job: job, ok: true });
       } catch (err) {
         const message = String((err && err.message) || err);
-        log({ type: "job-error", index: i, job: job, error: message });
+        log({ type: "job-error", index: i, job: job, error: message, retry: retry });
         results.push({ job: job, ok: false, error: message });
       }
       if (i < jobs.length - 1) await sleep(delay);
     }
+    return results;
+  }
+
+  async function runBatch(config, emit) {
+    const log = emit || (() => {});
+    const settings = config.settings || {};
+    const jobs = buildJobs(config);
+
+    if (!jobs.length) throw new Error("No source(s)/presets selected.");
+    if (config.dryRun) {
+      for (const job of jobs) log({ type: "job-preview", job: job });
+      return jobs;
+    }
+
+    const batchStarted = Date.now();
+    const results = await executeJobs(jobs, config, log, { retry: false });
+    let allResults = results;
 
     if (results.some((r) => r.ok)) {
       log({ type: "monitor-start", count: results.filter((r) => r.ok).length });
-      await monitorJobs(jobs, log, settings.monitorTimeoutMs, batchStarted);
+      let verification = await monitorJobs(
+        jobs,
+        log,
+        settings.monitorTimeoutMs,
+        batchStarted
+      );
+      if (verification && verification.report) {
+        let report = verification.report;
+        let short = report.filter((r) => r.found < r.expected);
+        let attempt = 0;
+        const maxRetries = Math.max(0, Number(settings.autoRetryPasses ?? 1));
+        log({
+          type: "batch-verify",
+          jobs: report,
+          errors: verification.errors,
+          attempt: attempt,
+          final: short.length === 0 || maxRetries === 0
+        });
+
+        while (short.length && attempt < maxRetries) {
+          const retryJobs = selectRetryJobs(jobs, short);
+          if (!retryJobs.length) break;
+          attempt++;
+          log({
+            type: "batch-retry-start",
+            count: retryJobs.length,
+            jobs: short,
+            attempt: attempt
+          });
+          const retryResults = await executeJobs(retryJobs, config, log, {
+            retry: true,
+            attempt: attempt
+          });
+          allResults = allResults.concat(retryResults);
+          log({ type: "monitor-start", count: retryJobs.length, retry: true });
+          const next = await monitorJobs(
+            jobs,
+            log,
+            settings.monitorTimeoutMs,
+            batchStarted
+          );
+          if (!next || !next.report) break;
+          verification = next;
+          report = next.report;
+          short = report.filter((r) => r.found < r.expected);
+          log({
+            type: "batch-verify",
+            jobs: report,
+            errors: next.errors,
+            attempt: attempt,
+            final: short.length === 0 || attempt >= maxRetries
+          });
+        }
+      } else {
+        log({ type: "batch-verify-unavailable" });
+      }
     }
+
     // Leave the library search as we found it.
     try {
       const search = S.find("clipSearchInput");
@@ -772,8 +877,8 @@
     } catch (err) {
       /* ignore */
     }
-    log({ type: "batch-complete", results: results });
-    return results;
+    log({ type: "batch-complete", results: allResults });
+    return allResults;
   }
 
   root.SunoGenCoverFlow = {
@@ -792,7 +897,9 @@
       selectWorkspace: selectWorkspace,
       clickCreate: clickCreate,
       monitorJobs: monitorJobs,
-      monitorJobsFeed: monitorJobsFeed
+      monitorJobsFeed: monitorJobsFeed,
+      selectRetryJobs: selectRetryJobs,
+      executeJobs: executeJobs
     }
   };
 })(globalThis);
