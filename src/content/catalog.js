@@ -1,7 +1,11 @@
 /**
  * SunoGen catalogue helpers (isolated world).
  *
- * Currently: the complete workspace list for the "Export catalog JSON" tool.
+ * Holds the Suno API work behind the panel's catalogue features:
+ *   - workspaces  — the complete workspace ("project") list for
+ *                   "Export catalog JSON";
+ *   - songs       — every library clip with its workspace for suno-songs.json;
+ *   - title repair — library search + clip metadata renames.
  *
  * Suno calls workspaces "projects". The create panel's "Save to..." picker
  * loads them lazily, 20 at a time as you scroll, and only while the popover is
@@ -21,8 +25,23 @@
   const API_QUERY = "sort=max_created_at_last_updated_clip&show_trashed=false&exclude_shared=false";
   const PAGE_SIZE = 20; // rows per page, as returned by the API
   const MAX_PAGES = 100; // safety net (2000 workspaces)
-  const CONCURRENCY = 4;
+  const CONCURRENCY = 2;
   const REQUEST_TIMEOUT_MS = 15000;
+  const FEED_ATTEMPTS = 5; // 429/5xx retries per feed page
+
+  // --- clip feed (songs) ---
+  const FEED_PATH = "/a/api/feed/v3";
+  const FEED_LIMIT = 100; // the API rejects limit > 100
+  const MAX_SONG_PAGES = 400; // safety net (40k songs)
+  // Everything in the library that is a song: disliked clips included (flagged
+  // per song), but not trashed clips, stems or studio-project clips.
+  const FEED_FILTERS = {
+    disliked: "Any",
+    trashed: "False",
+    fromStudioProject: { presence: "False" },
+    stem: { presence: "False" },
+    stemComplement: "False"
+  };
 
   // --- title repair (library search + metadata rename) ---
   const SEARCH_PATH = "/a/api/search/";
@@ -77,27 +96,42 @@
     );
   }
 
+  /** One page of the workspace list, with the same throttling/backoff as the feed. */
   async function fetchPage(page) {
-    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null;
     const headers = { Accept: "application/json" };
     const token = sessionToken();
     if (token) headers.Authorization = "Bearer " + token;
-    try {
-      const res = await fetch(API_PATH + "?" + API_QUERY + "&page=" + page, {
-        headers: headers,
-        credentials: "same-origin",
-        signal: controller ? controller.signal : undefined
-      });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const json = await res.json();
-      return {
-        total: Number(json && json.num_total_results) || 0,
-        projects: json && Array.isArray(json.projects) ? json.projects : []
-      };
-    } finally {
-      if (timer) clearTimeout(timer);
+
+    let lastError = null;
+    for (let attempt = 0; attempt < FEED_ATTEMPTS; attempt++) {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null;
+      try {
+        const res = await fetch(API_PATH + "?" + API_QUERY + "&page=" + page, {
+          headers: headers,
+          credentials: "same-origin",
+          signal: controller ? controller.signal : undefined
+        });
+        if (res.ok) {
+          const json = await res.json();
+          return {
+            total: Number(json && json.num_total_results) || 0,
+            projects: json && Array.isArray(json.projects) ? json.projects : []
+          };
+        }
+        lastError = new Error(
+          res.status === 429 ? "HTTP 429 (rate limited)" : "HTTP " + res.status
+        );
+        if (!isRetryableStatus(res.status)) break;
+        if (attempt < FEED_ATTEMPTS - 1) await sleep(retryDelayMs(res, attempt));
+      } catch (err) {
+        lastError = err;
+        if (attempt < FEED_ATTEMPTS - 1) await sleep(retryDelayMs(null, attempt));
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     }
+    throw lastError || new Error("workspace list failed");
   }
 
   /**
@@ -534,15 +568,229 @@
     };
   }
 
+  // --- songs ---
+
+  /**
+   * What the scan actually asked for, flat enough to persist and diff:
+   * `{ trashed: "False", disliked: "Any", … }`. Derived from FEED_FILTERS so it
+   * cannot drift from the request.
+   */
+  function filterEcho() {
+    const out = {};
+    for (const key of Object.keys(FEED_FILTERS)) {
+      const value = FEED_FILTERS[key];
+      out[key] = value && typeof value === "object" ? value.presence || "Any" : String(value);
+    }
+    return out;
+  }
+
+  /**
+   * One compact catalogue row per clip; `project` is the clip's workspace
+   * (Suno calls them projects). It is null only for clips with no workspace.
+   * Like/dislike come from `reaction` (`reaction_type: "L"|"D"`) with `is_liked`
+   * as the fallback boolean; `likedAt` is the reaction's update time.
+   */
+  function toSong(c) {
+    if (!c || !c.id) return null;
+    const meta = c.metadata && typeof c.metadata === "object" ? c.metadata : {};
+    const project = c.project && typeof c.project === "object" ? c.project : null;
+    const reaction = c.reaction && typeof c.reaction === "object" ? c.reaction : null;
+    const reactionType = reaction ? reaction.reaction_type : null;
+    return {
+      id: String(c.id),
+      title: c.title || meta.title || "",
+      createdAt: c.created_at || null,
+      status: c.status || null,
+      type: meta.type === "upload" ? "upload" : "generated",
+      duration: typeof meta.duration === "number" ? Math.round(meta.duration * 100) / 100 : null,
+      tags: typeof meta.tags === "string" ? meta.tags : "",
+      model: c.model_name || null,
+      isDownloadUnlocked: c.is_download_unlocked === true,
+      isLiked: c.is_liked === true || reactionType === "L",
+      isDisliked: reactionType === "D",
+      likedAt: reactionType === "L" && reaction.updated_at ? String(reaction.updated_at) : null,
+      project: project && project.id ? { id: String(project.id), name: project.name || "" } : null
+    };
+  }
+
+  /**
+   * Deterministic order so two exports diff cleanly: project name (orphans
+   * last), then createdAt, then id — Suno emits 2 clips per Create with the
+   * same timestamp, so the id tiebreak is required for a stable order.
+   */
+  function compareSongs(a, b) {
+    const aHas = Boolean(a.project);
+    const bHas = Boolean(b.project);
+    if (aHas !== bHas) return aHas ? -1 : 1; // orphan group last
+    if (aHas) {
+      const an = a.project.name || "";
+      const bn = b.project.name || "";
+      const byName = an.localeCompare(bn, undefined, { sensitivity: "base" }) || an.localeCompare(bn);
+      if (byName) return byName;
+      if (a.project.id !== b.project.id) return a.project.id < b.project.id ? -1 : 1;
+    }
+    const ac = a.createdAt || "";
+    const bc = b.createdAt || "";
+    if (ac !== bc) return ac < bc ? -1 : 1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  }
+
+  /**
+   * Backoff for a retryable response. 429 carries `Retry-After` (seconds or a
+   * date); otherwise exponential 0.5, 1, 2, 4, 8 s with jitter.
+   */
+  function retryDelayMs(res, attempt) {
+    let hint = 0;
+    try {
+      const raw = res && res.headers && res.headers.get("retry-after");
+      if (raw) {
+        const secs = Number(raw);
+        if (isFinite(secs)) hint = secs * 1000;
+        else {
+          const at = Date.parse(raw);
+          if (!isNaN(at)) hint = Math.max(0, at - Date.now());
+        }
+      }
+    } catch (err) {
+      /* ignore */
+    }
+    if (hint > 0) return Math.min(30000, Math.max(500, hint));
+    const base = Math.min(8000, 500 * Math.pow(2, attempt));
+    return base + Math.floor(Math.random() * 250);
+  }
+
+  /** 429/408/5xx and network errors are worth retrying; 400/401/403 are not. */
+  function isRetryableStatus(status) {
+    return status === 429 || status === 408 || status >= 500;
+  }
+
+  /**
+   * One page of the clip feed. Cursor-based, so pages must be fetched in order.
+   * Rate limits (429) and transient failures are retried with backoff; a real
+   * 4xx (bad cursor/auth) is fatal.
+   */
+  async function fetchFeedPage(cursor) {
+    const headers = { "Content-Type": "application/json", Accept: "application/json" };
+    const token = sessionToken();
+    if (token) headers.Authorization = "Bearer " + token;
+    const body = JSON.stringify({ cursor: cursor || null, limit: FEED_LIMIT, filters: FEED_FILTERS });
+
+    let lastError = null;
+    for (let attempt = 0; attempt < FEED_ATTEMPTS; attempt++) {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null;
+      try {
+        const res = await fetch(FEED_PATH, {
+          method: "POST",
+          headers: headers,
+          body: body,
+          credentials: "same-origin",
+          signal: controller ? controller.signal : undefined
+        });
+        if (res.ok) {
+          const json = await res.json();
+          return {
+            clips: json && Array.isArray(json.clips) ? json.clips : [],
+            cursor: (json && json.next_cursor) || null,
+            hasMore: Boolean(json && json.has_more)
+          };
+        }
+        lastError = new Error(
+          res.status === 429 ? "HTTP 429 (rate limited)" : "HTTP " + res.status
+        );
+        if (!isRetryableStatus(res.status)) break;
+        if (attempt < FEED_ATTEMPTS - 1) await sleep(retryDelayMs(res, attempt));
+      } catch (err) {
+        lastError = err;
+        if (attempt < FEED_ATTEMPTS - 1) await sleep(retryDelayMs(null, attempt));
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    throw lastError || new Error("clip feed failed");
+  }
+
+  /**
+   * Every clip in the library with its project, sorted for stable diffs.
+   * `options.expected` (e.g. the sum of workspace clip counts) only drives the
+   * progress display — the feed reports `has_more`, never a total.
+   *
+   * Resolves `{ songs, songCount, pages, complete, incompleteReason? }`.
+   * A page that keeps failing (e.g. 429 after all retries) stops the walk but
+   * still returns the rows gathered so far with `complete: false`, so the panel
+   * can write a file the importer will reject rather than nothing at all.
+   */
+  async function collectSongs(options) {
+    const onProgress = options && options.onProgress;
+    const expected = (options && options.expected) || 0;
+    const byId = new Map();
+    let cursor = null;
+    let pages = 0;
+    let exhausted = false;
+    let failure = null;
+
+    for (let i = 0; i < MAX_SONG_PAGES; i++) {
+      let res;
+      try {
+        res = await fetchFeedPage(cursor);
+      } catch (err) {
+        failure = err;
+        break;
+      }
+      pages++;
+      for (const c of res.clips) {
+        const song = toSong(c);
+        if (song && !byId.has(song.id)) byId.set(song.id, song);
+      }
+      if (onProgress) {
+        onProgress({ done: byId.size, total: expected, page: pages });
+      }
+      if (!res.hasMore || !res.clips.length || !res.cursor) {
+        exhausted = true;
+        break;
+      }
+      cursor = res.cursor;
+      await sleep(120); // spacing between pages keeps the rate limiter happy
+    }
+
+    const songs = [...byId.values()].sort(compareSongs);
+    const counts = { liked: 0, disliked: 0 };
+    for (const song of songs) {
+      if (song.isLiked) counts.liked++;
+      if (song.isDisliked) counts.disliked++;
+    }
+    const result = {
+      songs: songs,
+      songCount: songs.length,
+      pages: pages,
+      complete: !failure && exhausted,
+      filters: filterEcho(),
+      counts: counts
+    };
+    if (failure) {
+      result.incompleteReason =
+        String(failure.message || failure) + " at page " + (pages + 1);
+    } else if (!exhausted) {
+      result.incompleteReason = "stopped after " + MAX_SONG_PAGES + " pages";
+    }
+    return result;
+  }
+
   root.SunoGenCatalog = {
     collectWorkspaces: collectWorkspaces,
     searchLibrarySongs: searchLibrarySongs,
     collectTitleRepairs: collectTitleRepairs,
     renameClip: renameClip,
     renameClips: renameClips,
+    collectSongs: collectSongs,
     internals: {
       collectFromApi: collectFromApi,
       collectFromDom: collectFromDom,
+      collectSongs: collectSongs,
+      fetchFeedPage: fetchFeedPage,
+      toSong: toSong,
+      compareSongs: compareSongs,
+      filterEcho: filterEcho,
       parseEntry: parseEntry,
       pickerDialog: pickerDialog,
       listContainer: listContainer,

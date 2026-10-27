@@ -65,6 +65,28 @@ The app imports this in its **Styles** tab. Clip UUIDs give exact matching
 between Suno and files on disk; presets give the real style vocabulary and
 prompts. No per-workspace song drilling is needed.
 
+Tick **include songs** to also write `suno-songs.json` — every clip in your
+library, disliked ones included. The envelope is
+`{ schema: "suno-songs/v1", exportedAt, complete, pages, songCount, filters,
+counts, songs }`: `complete` is `true` only when the feed ran to the end, so an
+importer can reject a capped/cancelled export instead of silently under-reporting
+missing songs; `filters` echoes what the scan asked for (`disliked:"Any"` …) and
+`counts` is `{ liked, disliked }`. Each song carries `id`, `title`, `createdAt`,
+`status`, `type` (`generated`/`upload`), `duration`, `tags`, `model`,
+`isDownloadUnlocked`, `isLiked`, `isDisliked`, `likedAt` and `project: { id,
+name }` (null only for clips with no workspace, sorted last). Rows are ordered by
+project name, then `createdAt`, then `id`, so two exports diff cleanly. Suno puts
+the workspace on each clip (`clip.project`), so the whole library is one
+cursor-paginated pass over `POST /a/api/feed/v3` (100 clips per request) — no
+workspace needs opening and nothing needs scrolling. On a 2.7k-clip library that
+is 28 requests, ~38 s and a ~1.9 MB file; progress shows in the panel while it
+runs. Songs stay in a separate file so the catalog the workflow app loads on
+startup stays small. Signed `audio_url`s are deliberately not exported — they
+expire. If Suno throttles the feed (`429`), the export backs off and retries
+(honouring `Retry-After`); if it still can't finish, the songs file is written
+anyway with `complete: false` and the reason, so the app can reject a partial
+export instead of silently missing songs.
+
 ### Title repair
 
 **Tools → Title repair** finds generated covers whose song name leaked one of the

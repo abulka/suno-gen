@@ -91,6 +91,7 @@ Panel → content (`chrome.tabs.sendMessage`, auto-injects + retries on failure)
 | `SUNOGEN_PREVIEW` | build jobs without DOM |
 | `SUNOGEN_RUN_BATCH` | run the batch (`config`, incl. `dryRun`) |
 | `SUNOGEN_COLLECT_WORKSPACES` | full workspace list for the catalogue export (see below) |
+| `SUNOGEN_COLLECT_SONGS` (`{expected}`) | every library clip + its workspace for the optional `suno-songs.json` |
 
 Content → background: `SUNOGEN_CLIP_TITLES` (`{items:[{id,title}]}`) keeps the
 service worker's title→id map current for filename-based download matching.
@@ -291,6 +292,60 @@ Rows are `button > span` with text `<name> (N clips)` (legacy) or
 `<name>` + `N songs · …` (newer). Escape closes the popover again. The panel
 shows `catalog-progress` events while this runs and the status line reports which
 path was used, so a partial list is visible rather than silent.
+
+### Songs (`include songs` checkbox)
+
+Every clip already carries its workspace, so no per-workspace drilling is needed:
+
+```
+POST /a/api/feed/v3
+{ "cursor": null, "limit": 100, "filters": {
+    "disliked": "False", "trashed": "False",
+    "fromStudioProject": {"presence": "False"},
+    "stem": {"presence": "False"}, "stemComplement": "False" } }
+→ { clips: [...], next_cursor, has_more }
+```
+
+Each clip has `id`, `title`, `created_at`, `status`, `is_download_unlocked`,
+`model_name`, `metadata.{type,duration,tags,has_stem}` and
+`project: {id, name, …}` — the workspace. `limit` > 100 is rejected with HTTP
+400, and cursors are sequential, so the export is one loop; on a 2.7k-clip
+library that is 27 requests in ~35 s (median 1.2 s/page). The feed reports
+`has_more`, never a total, so progress uses the sum of workspace clip counts as
+an approximate denominator (`done/~total`) and the first response's
+`next_cursor` drives the next call. Retries are 2 extra attempts with backoff;
+a 4xx aborts. Output goes to a separate `suno-songs.json` (schema
+`suno-songs/v1`, ~1.9 MB for 2.7k clips) so the catalog stays small.
+
+The file is `{ schema: "suno-songs/v1", exportedAt, complete, pages, songCount,
+filters, counts, songs }`. `complete` is true only when the loop ended because
+the feed said `has_more: false`; hitting `MAX_SONG_PAGES` yields `complete:
+false` plus `incompleteReason`, and a mid-walk HTTP failure yields a partial file
+flagged the same way. `filters` is a flat echo of the request
+(`{disliked:"Any", trashed:"False", fromStudioProject:"False", stem:"False",
+stemComplement:"False"}`) derived from `FEED_FILTERS`, and `counts` is
+`{liked, disliked}` computed over the rows actually written. Disliked clips are
+**included** (the library view hides them by default) and flagged, so the file is
+"all songs". Every song keeps `project: {id, name}` (null for the handful of
+clips with no workspace); rows are sorted by project name → `createdAt` → `id` so
+exports diff cleanly (Suno emits 2 clips per Create with identical timestamps,
+hence the id tiebreak). `isLiked`/`isDisliked` come from
+`reaction.reaction_type` (`"L"`/`"D"`, with `is_liked` as a fallback), and
+`likedAt` is the reaction's `updated_at`. Signed `audio_url` is omitted on
+purpose. `tools/probe-songs.js` asserts the contract (songCount === songs.length,
+boolean flags, ISO-or-null likedAt, counts ≤ songCount, sort order, filters echo)
+and warns if the summed workspace clip counts drift more than 5% from songCount
+(they are Suno's cached aggregates: 2,683 vs 2,719 = −1.3%).
+
+**Throttling.** Suno answers bursts with `429`. Both API helpers therefore
+retry `429`/`408`/5xx and network errors up to 5 attempts, honouring
+`Retry-After` when present and otherwise backing off 0.5 → 8 s with jitter;
+only 400/401/403 are treated as fatal (one attempt). Feed pages are also spaced
+120 ms apart and the workspace pages are fetched 2 at a time. If every retry
+fails mid-walk, `collectSongs` keeps the rows it already has, returns
+`complete: false` with an accurate `incompleteReason` (e.g. `HTTP 429 (rate
+limited) at page 4`), and the panel writes that file anyway — flagged, so the
+importer rejects it — instead of discarding a 30 s scan.
 
 ## Debugging & testing techniques (why the harness is built this way)
 

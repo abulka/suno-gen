@@ -57,6 +57,7 @@ npm run cover -- --title="two days"        # drive Cover flow, dump menu + form
 node tools/probe.js --url=https://suno.com/me --inject '<js>'
 node tools/probe-catalog.js                  # exercise the catalogue workspace collector (API + picker)
 node tools/test-title.js                     # pure-logic checks for naming + marker repair
+node tools/probe-songs.js                    # page the whole clip feed (songs + workspace mapping)
 node tools/test-flow.js --title="two days" --style="..." --song="..." --ws="26-9 Mashes"
 node tools/test-flow.js ... --submit=yes   # ACTUALLY submits (spends credits)
 node tools/test-flow.js ... --batch=yes    # runs a 2-preset batch via runBatch

@@ -378,7 +378,24 @@
         onProgress: (p) =>
           emit({
             event: "catalog-progress",
+            phase: "workspaces",
             source: p.source,
+            done: p.done,
+            total: p.total
+          })
+      });
+      return Object.assign({ ok: true }, res);
+    },
+
+    SUNOGEN_COLLECT_SONGS: async (msg) => {
+      const Catalog = globalThis.SunoGenCatalog;
+      if (!Catalog) throw new Error("Catalog helper not loaded — reload the extension.");
+      const res = await Catalog.collectSongs({
+        expected: Number(msg && msg.expected) || 0,
+        onProgress: (p) =>
+          emit({
+            event: "catalog-progress",
+            phase: "songs",
             done: p.done,
             total: p.total
           })

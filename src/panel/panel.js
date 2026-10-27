@@ -1029,6 +1029,7 @@
     setChecked("dl-badge-unlock", state.settings.showUnlockBadge !== false);
     setChecked("dl-badge-history", state.settings.showHistoryBadge !== false);
     setChecked("dl-badge-disk", state.settings.showDiskBadge !== false);
+    setChecked("include-songs", state.settings.includeSongs === true);
   }
 
   function setChecked(id, value) {
@@ -1467,6 +1468,9 @@
     $("dl-badge-disk").addEventListener("change", (e) =>
       saveSettings({ showDiskBadge: e.target.checked })
     );
+    $("include-songs").addEventListener("change", (e) =>
+      saveSettings({ includeSongs: e.target.checked })
+    );
 
     $("dl-folder").addEventListener("click", async () => {
       let handle = null;
@@ -1485,6 +1489,16 @@
       if (scanState) scanState.cancelled = true;
     });
 
+    function downloadJson(payload, filename) {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
     $("export-catalog").addEventListener("click", async () => {
       const status = $("export-status");
       const btn = $("export-catalog");
@@ -1495,6 +1509,7 @@
       exportingCatalog = true;
       if (btn) btn.disabled = true;
       try {
+        const includeSongs = Boolean($("include-songs") && $("include-songs").checked);
         setStatus("Reading the workspace list from Suno…");
         const store = await chrome.storage.local.get(["presets", "downloadedClips"]);
         let collected = { workspaces: [], source: null, warning: null };
@@ -1536,17 +1551,68 @@
           workspaces,
           downloadedClips
         };
-        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "suno-catalog.json";
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        // Songs are opt-in: thousands of rows, so they go in their own file.
+        let songsResult = null;
+        let songsError = null;
+        if (includeSongs) {
+          setStatus("Reading songs from Suno…");
+          try {
+            const expected = workspaces.reduce((n, w) => n + (Number(w.clipCount) || 0), 0);
+            const res = await sendToContent("SUNOGEN_COLLECT_SONGS", { expected: expected });
+            if (res && res.ok) songsResult = res;
+            else songsError = (res && res.error) || "No response from the Suno tab.";
+          } catch (err) {
+            songsError = String((err && err.message) || err);
+          }
+        }
+
+        downloadJson(payload, "suno-catalog.json");
+        if (songsResult && (songsResult.songs || []).length) {
+          const songs = songsResult.songs;
+          await new Promise((r) => setTimeout(r, 300));
+          downloadJson(
+            {
+              schema: "suno-songs/v1",
+              exportedAt: payload.exportedAt,
+              complete: songsResult.complete === true,
+              pages: songsResult.pages || 0,
+              songCount: songs.length,
+              filters: songsResult.filters || {},
+              counts: songsResult.counts || { liked: 0, disliked: 0 },
+              songs: songs
+            },
+            "suno-songs.json"
+          );
+        }
 
         const parts = [
           `Exported ${presets.length} presets, ${workspaces.length} workspaces, ${downloadedClips.length} on-disk clips.`
         ];
+        if (songsResult) {
+          const songs = songsResult.songs || [];
+          const counts = songsResult.counts || {};
+          if (songs.length) {
+            parts.push(
+              `Wrote ${songs.length} songs to suno-songs.json (` +
+                (counts.liked || 0) +
+                " liked, " +
+                (counts.disliked || 0) +
+                " disliked)."
+            );
+          }
+          if (songsResult.complete !== true) {
+            parts.push(
+              "WARNING: songs export incomplete (" +
+                (songsResult.incompleteReason || "feed ended early") +
+                ")" +
+                (songs.length
+                  ? " — the file is marked complete:false, so the app should reject it."
+                  : " — no songs file was written.")
+            );
+          }
+        }
+        if (songsError) parts.push("Songs failed: " + songsError);
         if (collected.source === "api") {
           parts.push("Workspaces read from Suno's project API (complete list).");
         } else if (collected.source === "dom") {
@@ -1560,7 +1626,12 @@
         }
         setStatus(parts.join(" "));
         logLine(
-          "Catalog exported (" + workspaces.length + " workspaces" + (collected.source ? " via " + collected.source : "") + ").",
+          "Catalog exported (" +
+            workspaces.length +
+            " workspaces" +
+            (collected.source ? " via " + collected.source : "") +
+            (songsResult ? ", " + (songsResult.songs || []).length + " songs" : "") +
+            ").",
           workspaces.length ? "ok" : "err"
         );
       } catch (err) {
@@ -1744,9 +1815,14 @@
       if (!exportingCatalog) return;
       const status = $("export-status");
       if (!status) return;
-      const label = msg.source === "dom" ? "Reading the workspace picker" : "Reading workspaces from Suno";
+      const label =
+        msg.phase === "songs"
+          ? "Reading songs"
+          : msg.source === "dom"
+            ? "Reading the workspace picker"
+            : "Reading workspaces from Suno";
       status.textContent = msg.total
-        ? `${label}… ${msg.done}/${msg.total}`
+        ? `${label}… ${msg.done}/${msg.phase === "songs" ? "~" : ""}${msg.total}`
         : `${label}… ${msg.done || 0}`;
     } else if (msg.event === "page") {
       renderPageEvent(msg.payload);

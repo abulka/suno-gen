@@ -142,9 +142,12 @@
           <div class="tools-subhead">Catalogue</div>
           <div class="tools-actions">
             <button id="export-catalog" type="button" class="btn btn-sm">Export catalog JSON</button>
+            <label class="inline" title="Also write suno-songs.json: every song with its id and workspace">
+              <input id="include-songs" type="checkbox" /> include songs
+            </label>
           </div>
           <div id="export-status" class="muted tools-hint">
-            Exports style presets, all workspaces (read from Suno's project API) and on-disk clip IDs for the Music workflow app.
+            Exports style presets, all workspaces (read from Suno's project API) and on-disk clip IDs for the Music workflow app. Tick "include songs" to also write suno-songs.json (every clip with its id and workspace).
           </div>
           <div class="tools-subhead">Title repair</div>
           <div class="tools-actions">
