@@ -311,6 +311,34 @@
   // resume recording automatically if the page navigated mid-recording
   if (readRec().active) installRecorder();
 
+  let titleRepairCancelled = false;
+
+  /**
+   * Keep old titles as aliases after a rename so filenames downloaded before
+   * the rename (and Chrome download history) still resolve to the clip id. The
+   * audio files themselves embed the UUID, but this preserves the fast
+   * filename -> title path and old blob-download history matches.
+   */
+  async function rememberTitleAliases(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    if (!list.length) return;
+    try {
+      const store = await chrome.storage.local.get("titleAliases");
+      const aliases = store.titleAliases || {};
+      for (const entry of list) {
+        const key = String((entry && entry.title) || "").trim().toLowerCase();
+        if (key && entry && entry.id) aliases[key] = String(entry.id);
+      }
+      const keys = Object.keys(aliases);
+      if (keys.length > 5000) {
+        for (const key of keys.slice(0, keys.length - 5000)) delete aliases[key];
+      }
+      await chrome.storage.local.set({ titleAliases: aliases });
+    } catch (err) {
+      /* non-fatal: downloads still match via the embedded UUID */
+    }
+  }
+
   const HANDLERS = {
     SUNOGEN_PING: () => ({
       ok: true,
@@ -360,14 +388,68 @@
 
     SUNOGEN_PREVIEW: (msg) => ({ ok: true, jobs: Flow.buildJobs(msg.config) }),
 
+    SUNOGEN_SCAN_TITLE_REPAIRS: async (msg) => {
+      const Catalog = globalThis.SunoGenCatalog;
+      if (!Catalog) throw new Error("Catalog helper not loaded — reload the extension.");
+      const res = await Catalog.collectTitleRepairs(msg && msg.term, (p) =>
+        emit({
+          event: "title-repair-progress",
+          phase: p.phase,
+          done: p.done,
+          total: p.total
+        })
+      );
+      return Object.assign({ ok: true }, res);
+    },
+
+    SUNOGEN_CANCEL_TITLE_REPAIRS: () => {
+      titleRepairCancelled = true;
+      return { ok: true };
+    },
+
+    SUNOGEN_RENAME_CLIPS: async (msg) => {
+      const Catalog = globalThis.SunoGenCatalog;
+      if (!Catalog) throw new Error("Catalog helper not loaded — reload the extension.");
+      titleRepairCancelled = false;
+      await rememberTitleAliases(msg && msg.aliases);
+      const res = await Catalog.renameClips(
+        msg && msg.items,
+        (p) =>
+          emit({
+            event: "title-rename-progress",
+            done: p.done,
+            total: p.total,
+            result: p.result
+          }),
+        () => titleRepairCancelled
+      );
+      return Object.assign({ ok: true }, res);
+    },
+
     SUNOGEN_RUN_BATCH: async (msg) => {
-      const results = await Flow.runBatch(msg.config, (evt) => {
-        const event = evt.type;
-        const rest = Object.assign({}, evt);
-        delete rest.type;
-        emit(Object.assign({ event: event }, rest));
-      });
-      return { ok: true, results: results };
+      if (globalThis.__sunogenBatchRunning) {
+        throw new Error("A batch is already running on this page.");
+      }
+      globalThis.__sunogenBatchRunning = true;
+      // Picking and running are mutually exclusive: a still-armed multiple-pick
+      // mode keeps a capture-phase click listener on the page and would keep
+      // adding sources while the batch drives Suno. Disarm it defensively even
+      // if the panel forgot to.
+      if (readPickPersist().active) {
+        stopPick();
+        emit({ event: "pick-cancelled", reason: "batch-started" });
+      }
+      try {
+        const results = await Flow.runBatch(msg.config, (evt) => {
+          const event = evt.type;
+          const rest = Object.assign({}, evt);
+          delete rest.type;
+          emit(Object.assign({ event: event }, rest));
+        });
+        return { ok: true, results: results };
+      } finally {
+        globalThis.__sunogenBatchRunning = false;
+      }
     }
   };
 

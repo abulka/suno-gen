@@ -65,6 +65,18 @@ The app imports this in its **Styles** tab. Clip UUIDs give exact matching
 between Suno and files on disk; presets give the real style vocabulary and
 prompts. No per-workspace song drilling is needed.
 
+### Title repair
+
+**Tools → Title repair** finds generated covers whose song name leaked one of the
+processing markers you add to source filenames (`mangled`, `mangled2`, …). It
+searches your library for the marker, maps each cover back to its source clip
+through Suno's own `metadata.cover_clip_id`, and shows grouped `old → new` titles
+with checkboxes and editable text. Apply renames every selected clip via Suno's
+`set_metadata` endpoint (titles only). Old titles are remembered as aliases so
+files downloaded before the rename still match; the UUID embedded in the audio
+keeps disk tracking exact regardless. Suno's workspace view caches clip titles
+in memory, so use **Reload Suno page** (or hard-reload the tab) after applying.
+
 ## Download badges
 
 Suno Generator injects small badges onto each clip's artwork in the Suno clip

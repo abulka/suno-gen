@@ -23,11 +23,15 @@
   let recording = false;
   let diagnosticsBlob = "";
   let batchRunning = false;
+  let batchCallActive = false;
   let activeJobTitles = new Set();
   let lastStatusByTitle = new Map();
   let pickMode = false;
   let pickMultiple = false;
   let exportingCatalog = false;
+  let repairGroups = [];
+  let repairApplying = false;
+  let repairScanning = false;
 
   // ---------- storage ----------
 
@@ -43,6 +47,20 @@
         state.sources = [data.lastBatch.source];
       }
     }
+    // Older batches stored a leaked processing marker as the song name
+    // ("mangled", "mangled-8be1", "seqout mangled2"). Recompute those now that
+    // title.js understands markers; leave deliberate custom names alone.
+    state.sources = state.sources.map((source) => {
+      if (!source || !source.title) return source;
+      const stored = String(source.songName || "").trim();
+      const looksDerivedOrLeaked = !stored || T.stripProcessingMarker(stored) !== stored;
+      if (!looksDerivedOrLeaked) return source;
+      const titleHasMarker = T.stripProcessingMarker(source.title) !== String(source.title).trim();
+      if (!titleHasMarker) return source;
+      const derived = T.deriveSongName(source.title);
+      if (!derived) return source;
+      return Object.assign({}, source, { songName: derived });
+    });
     if (!state.batch.date) state.batch.date = T.todayYYM();
     if (!state.batch.rating) state.batch.rating = state.settings.rating || "iiiN";
     if (state.batch.autoWorkspace === undefined) {
@@ -216,8 +234,12 @@
   }
 
   async function loadTitleMap() {
-    const store = await chrome.storage.local.get("clipTitles");
+    const store = await chrome.storage.local.get(["clipTitles", "titleAliases"]);
     const map = new Map();
+    // Old titles first; current titles win if the same text is ever reused.
+    for (const [title, id] of Object.entries(store.titleAliases || {})) {
+      if (title && id) map.set(String(title).trim().toLowerCase(), id);
+    }
     for (const [id, title] of Object.entries(store.clipTitles || {})) {
       if (title) map.set(String(title).trim().toLowerCase(), id);
     }
@@ -981,7 +1003,18 @@
       state.sources.length > 0 &&
       state.presets.some((p) => p.selected !== false) &&
       (state.sources.length > 1 || !!($("song-name").value || "").trim());
-    $("run-batch").disabled = !ready;
+    $("run-batch").disabled = !ready || batchCallActive || repairApplying;
+    const scan = $("repair-scan");
+    if (scan) scan.disabled = repairScanning || repairApplying || batchCallActive;
+    const apply = $("repair-apply");
+    if (apply) {
+      apply.disabled =
+        repairScanning || repairApplying || batchCallActive || repairRunCount() === 0;
+    }
+    const cancel = $("repair-cancel");
+    if (cancel) cancel.disabled = !repairApplying;
+    const reload = $("repair-reload");
+    if (reload) reload.disabled = repairScanning || repairApplying || batchCallActive;
   }
 
   function renderAll() {
@@ -1028,6 +1061,238 @@
     pickMode = false;
     pickMultiple = false;
     updatePickStatus();
+  }
+
+  // ---------- title repair ----------
+
+  function setRepairStatus(text) {
+    const el = $("repair-status");
+    if (el) el.textContent = text;
+  }
+
+  function repairRunCount() {
+    return repairGroups.reduce(
+      (n, g) => n + (g.enabled && String(g.newTitle || "").trim() ? g.ids.length : 0),
+      0
+    );
+  }
+
+  /**
+   * Search results -> grouped old→new proposals. The derived name comes from
+   * the cover's source clip (`metadata.cover_clip_id`), mirroring buildJobs.
+   * A name that merely ends in a marker keeps the user's formatting; a name
+   * that is only the marker falls back to the derived source name.
+   */
+  function buildRepairGroups(rows) {
+    const sourceById = new Map();
+    for (const row of rows) {
+      if (!row || !row.sourceId || !row.sourceTitle) continue;
+      if (!sourceById.has(row.sourceId)) {
+        sourceById.set(row.sourceId, { clipId: row.sourceId, title: row.sourceTitle });
+      }
+    }
+    const sourceList = [...sourceById.values()];
+    const names = T.uniqueSourceNames(sourceList);
+    const nameById = new Map(sourceList.map((s, i) => [s.clipId, names[i]]));
+
+    const groups = new Map();
+    for (const row of rows) {
+      if (!row || !row.title) continue;
+      const parts = T.splitTitle(row.title);
+      if (!parts.head) continue; // not one of our generated titles
+      const derived = row.sourceId
+        ? nameById.get(row.sourceId) || T.deriveSongName(row.sourceTitle)
+        : "";
+      const name = T.repairSongName(parts.songName, derived);
+      const newTitle = name ? T.joinTitle(parts.head, name) : "";
+      if (newTitle && newTitle === row.title) continue;
+      const key = row.title + "\u0000" + newTitle;
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          oldTitle: row.title,
+          newTitle: newTitle,
+          enabled: !!newTitle,
+          ids: [],
+          sourceTitle: row.sourceTitle || "",
+          unresolved: !name
+        };
+        groups.set(key, group);
+      }
+      group.ids.push(row.id);
+    }
+    return [...groups.values()].sort((a, b) => a.oldTitle.localeCompare(b.oldTitle));
+  }
+
+  function renderRepairGroups() {
+    const list = $("repair-list");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!repairGroups.length) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.textContent = "No title changes proposed.";
+      list.appendChild(empty);
+    }
+    repairGroups.forEach((group) => {
+      const row = document.createElement("div");
+      row.className = "repair-row" + (group.enabled ? "" : " disabled");
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = group.enabled;
+      cb.disabled = repairApplying;
+      cb.addEventListener("change", () => {
+        group.enabled = cb.checked;
+        row.className = "repair-row" + (group.enabled ? "" : " disabled");
+        updateRunEnabled();
+      });
+
+      const body = document.createElement("div");
+      body.className = "repair-body";
+
+      const old = document.createElement("div");
+      old.className = "repair-old";
+      old.textContent = group.oldTitle;
+      body.appendChild(old);
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = group.newTitle;
+      input.placeholder = group.unresolved ? "Type the corrected name…" : "Corrected title";
+      input.disabled = repairApplying;
+      input.addEventListener("input", () => {
+        group.newTitle = input.value;
+        if (!input.value.trim()) {
+          group.enabled = false;
+          cb.checked = false;
+          row.className = "repair-row disabled";
+        } else if (group.unresolved && !group.enabled) {
+          group.enabled = true;
+          cb.checked = true;
+          row.className = "repair-row";
+        }
+        updateRunEnabled();
+      });
+      body.appendChild(input);
+
+      const note = document.createElement("div");
+      note.className = "repair-note" + (group.unresolved ? " warn" : "");
+      note.textContent = group.unresolved
+        ? "No source clip resolved — edit the title manually."
+        : group.sourceTitle
+        ? "from " + group.sourceTitle
+        : "";
+      if (note.textContent) body.appendChild(note);
+
+      const count = document.createElement("span");
+      count.className = "repair-count";
+      count.textContent = group.ids.length + "×";
+      count.title = group.ids.length + " clip(s) share this title";
+
+      row.appendChild(cb);
+      row.appendChild(body);
+      row.appendChild(count);
+      list.appendChild(row);
+    });
+    updateRunEnabled();
+  }
+
+  async function scanTitleRepairs() {
+    if (repairScanning || repairApplying || batchCallActive) return;
+    const term = (($("repair-term") || {}).value || "").trim() || "mangled";
+    repairScanning = true;
+    repairGroups = [];
+    $("repair-panel").hidden = true;
+    renderRepairGroups();
+    setRepairStatus('Searching Suno for "' + term + '"…');
+    updateRunEnabled();
+    try {
+      const res = await sendToContent("SUNOGEN_SCAN_TITLE_REPAIRS", { term: term });
+      if (!res || !res.ok) throw new Error((res && res.error) || "No response from the Suno tab.");
+      repairGroups = buildRepairGroups(res.rows || []);
+      const changed = repairGroups.reduce((n, g) => n + g.ids.length, 0);
+      $("repair-panel").hidden = repairGroups.length === 0;
+      setRepairStatus(
+        repairGroups.length
+          ? "Found " + repairGroups.length + " title(s) to fix across " + changed +
+            " clip(s). Review, uncheck any, then rename."
+          : "No titles need changing."
+      );
+      logLine(
+        "Title scan: scanned " + (res.scanned || 0) + " matching clip(s) · " +
+          repairGroups.length + " title(s) / " + changed + " clip(s) to repair.",
+        "ok"
+      );
+    } catch (err) {
+      setRepairStatus("Scan failed: " + String((err && err.message) || err));
+      logLine("Title repair scan failed: " + String((err && err.message) || err), "err");
+    } finally {
+      repairScanning = false;
+      renderRepairGroups();
+    }
+  }
+
+  async function applyTitleRepairs() {
+    if (repairApplying || repairScanning || batchCallActive) return;
+    const items = [];
+    const aliases = [];
+    for (const group of repairGroups) {
+      const title = String(group.newTitle || "").trim();
+      if (!group.enabled || !title) continue;
+      for (const id of group.ids) {
+        items.push({ id: id, title: title });
+        aliases.push({ id: id, title: group.oldTitle });
+      }
+    }
+    if (!items.length) {
+      logLine("No title changes selected.", "err");
+      return;
+    }
+    const ok = window.confirm(
+      "Rename " + items.length + " clip(s) on Suno?\n\nOnly titles change; audio and metadata stay as-is."
+    );
+    if (!ok) return;
+
+    repairApplying = true;
+    setRepairStatus("Renaming 0/" + items.length + "…");
+    renderRepairGroups();
+    updateRunEnabled();
+    try {
+      const res = await sendToContent("SUNOGEN_RENAME_CLIPS", { items: items, aliases: aliases });
+      if (!res || !res.ok) throw new Error((res && res.error) || "No response from the Suno tab.");
+      const renamed = Number(res.renamed) || 0;
+      const failed = Number(res.failed) || 0;
+      const okIds = new Set((res.results || []).filter((r) => r.ok).map((r) => r.id));
+      repairGroups = repairGroups
+        .map((g) =>
+          Object.assign({}, g, { ids: g.ids.filter((id) => !okIds.has(id)) })
+        )
+        .filter((g) => g.ids.length);
+      setRepairStatus(
+        "Renamed " + renamed + " clip(s)" + (failed ? " · " + failed + " failed" : "") +
+          ". Suno's workspace view caches titles — click Reload Suno page."
+      );
+      logLine(
+        "Renamed " + renamed + " clip title(s)" + (failed ? ", " + failed + " failed" : "") + ".",
+        failed ? "err" : "ok"
+      );
+    } catch (err) {
+      setRepairStatus("Rename failed: " + String((err && err.message) || err));
+      logLine(String((err && err.message) || err), "err");
+    } finally {
+      repairApplying = false;
+      renderRepairGroups();
+    }
+  }
+
+  async function cancelTitleRepairs() {
+    try {
+      await sendToContent("SUNOGEN_CANCEL_TITLE_REPAIRS");
+    } catch (err) {
+      /* ignore */
+    }
+    if (repairApplying) setRepairStatus("Stopping after the current clip…");
   }
 
   // ---------- preset editor ----------
@@ -1176,6 +1441,20 @@
       else armPick(true);
     });
     $("clear-sources").addEventListener("click", clearSources);
+
+    $("repair-scan").addEventListener("click", () => scanTitleRepairs());
+    $("repair-apply").addEventListener("click", () => applyTitleRepairs());
+    $("repair-cancel").addEventListener("click", () => cancelTitleRepairs());
+    $("repair-reload").addEventListener("click", async () => {
+      try {
+        const tab = await getTab();
+        if (!tab || !isSunoUrl(tab.url)) throw new Error("Active tab is not a suno.com page.");
+        await chrome.tabs.reload(tab.id, { bypassCache: true });
+        logLine("Reloaded the Suno tab to show the repaired titles.", "ok");
+      } catch (err) {
+        logLine(String((err && err.message) || err), "err");
+      }
+    });
 
     $("diagnose").addEventListener("click", () => runDiagnose());
 
@@ -1349,11 +1628,36 @@
     });
 
     $("run-batch").addEventListener("click", async () => {
-      const config = currentConfig();
-      config.dryRun = $("dry-run").checked;
-      logLine("Starting batch (" + (config.dryRun ? "dry run" : "live") + ")…");
-      batchRunning = !config.dryRun;
+      if (batchCallActive || repairApplying) {
+        logLine("A batch or title repair is already running — ignoring this click.", "err");
+        return;
+      }
+      batchCallActive = true;
+      updateRunEnabled();
       try {
+        // Clicking Generate while multi-pick is still armed is a common way to
+        // accidentally start the batch twice / keep adding sources mid-run.
+        // Stale panel state is covered too: ask the page whether pick mode is
+        // really active and disarm it before building the config.
+        let pagePickActive = pickMode || pickMultiple;
+        try {
+          const ping = await sendToContent("SUNOGEN_PING");
+          pagePickActive = pagePickActive || !!(ping && ping.pick && ping.pick.active);
+        } catch (err) {
+          /* the run call below reports a dead tab */
+        }
+        if (pagePickActive) {
+          await disarmPick();
+          logLine("Stopped source picking before running the batch.");
+          // Let any already-dispatched source-picked message land before the
+          // snapshot is built.
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+
+        const config = currentConfig();
+        config.dryRun = $("dry-run").checked;
+        logLine("Starting batch (" + (config.dryRun ? "dry run" : "live") + ")…");
+        batchRunning = !config.dryRun;
         const res = await sendToContent("SUNOGEN_RUN_BATCH", { config: config });
         if (config.dryRun && res.results) {
           res.results.forEach((j) => logLine("  preview: " + j.title));
@@ -1363,6 +1667,8 @@
         logLine(String(err.message || err), "err");
       } finally {
         batchRunning = false;
+        batchCallActive = false;
+        updateRunEnabled();
       }
     });
   }
@@ -1375,6 +1681,10 @@
     }
     if (msg.type !== "SUNOGEN_EVENT") return;
     if (msg.event === "source-picked") {
+      if (batchCallActive) {
+        logLine("Ignored source added while the batch is running: " + (msg.source.title || msg.source.clipId), "err");
+        return;
+      }
       const added = addSource(msg.source);
       if (!pickMultiple) {
         pickMode = false;
@@ -1389,9 +1699,28 @@
       pickMode = false;
       pickMultiple = false;
       updatePickStatus();
-      logLine("Pick cancelled.");
+      logLine(msg.reason === "batch-started" ? "Pick mode stopped for the batch." : "Pick cancelled.");
     } else if (msg.event === "pick-miss") {
       logLine(msg.message || "No song card detected.", "err");
+    } else if (msg.event === "title-repair-progress") {
+      if (!repairScanning) return;
+      if (msg.phase === "search") {
+        setRepairStatus(
+          msg.total
+            ? "Searching Suno… " + msg.done + "/" + msg.total + " matching clip(s)"
+            : "Searching Suno… " + (msg.done || 0)
+        );
+      } else if (msg.phase === "sources") {
+        setRepairStatus(
+          "Resolving source clips… " + (msg.done || 0) + "/" + (msg.total || 0)
+        );
+      }
+    } else if (msg.event === "title-rename-progress") {
+      if (!repairApplying) return;
+      setRepairStatus("Renaming " + (msg.done || 0) + "/" + (msg.total || 0) + "…");
+      if (msg.result && !msg.result.ok && msg.result.error !== "cancelled") {
+        logLine("  rename failed: " + msg.result.title + " — " + msg.result.error, "err");
+      }
     } else if (msg.event === "job-start") {
       if (msg.index === 0) {
         activeJobTitles = new Set();

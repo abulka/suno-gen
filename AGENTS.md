@@ -56,6 +56,7 @@ npm run inspect             # dump selector inventory of the live create page
 npm run cover -- --title="two days"        # drive Cover flow, dump menu + form
 node tools/probe.js --url=https://suno.com/me --inject '<js>'
 node tools/probe-catalog.js                  # exercise the catalogue workspace collector (API + picker)
+node tools/test-title.js                     # pure-logic checks for naming + marker repair
 node tools/test-flow.js --title="two days" --style="..." --song="..." --ws="26-9 Mashes"
 node tools/test-flow.js ... --submit=yes   # ACTUALLY submits (spends credits)
 node tools/test-flow.js ... --batch=yes    # runs a 2-preset batch via runBatch
@@ -198,6 +199,15 @@ extension loaded, or the MCP `--extension` flag.
   `clipId`. Each source's Song name is derived (`title.js:deriveSongName`); with
   >1 source the Song name field is disabled and names are per-source
   (`title.js:uniqueSourceNames`, duplicates get a 4-char clip-id suffix).
+- **Processing markers are not names:** `mangled`, `mangled2`, `mangled3`, …
+  (with a ` - ` or space before it, and an optional old `-a1b2` dedupe suffix)
+  are the user's filter/EQ tags. `deriveSongName` strips them, so
+  `2026-06-28 fine - mangled` → `fine` and `seqout mangled2` → `seqout`. At panel
+  load, stored sources whose `songName` leaked a marker are recomputed. Do not
+  reintroduce the marker into the title or workspace.
+- **Run hardening:** clicking **Generate batch** disarms pick mode (asking the
+  page, since the panel's cached state can be stale), ignores repeat clicks while
+  a batch call is in flight, and ignores `source-picked` events during the batch.
 - **Job list:** `buildJobs` = sources × selected presets. `take` steps by 2 per
   job; the `take continues across songs` checkbox (`batch.globalTake`, default
   on) controls whether the take counts globally or resets per source. Auto
@@ -206,6 +216,20 @@ extension loaded, or the MCP `--extension` flag.
   override wins; missing workspaces are auto-created (user preference).
 - **Resolution order** (`title.js:resolveWorkspace`): preset override → batch
   workspace → derived from date+name.
+- **Title repair** (Tools → Title repair): searches the library via
+  `POST /a/api/search/` (`library_song`, term default `mangled`), keeps generated
+  covers with a template title, resolves each via `metadata.cover_clip_id` /
+  `edited_clip_id` (`GET /a/api/clip/{id}`), and proposes `old → new` names.
+  Existing names that merely end with a marker keep their formatting; only a name
+  that is exactly the marker falls back to the source-derived name
+  (`title.js:repairSongName`). Preview groups are editable/uncheckable; applying
+  renames every selected clip with `POST /a/api/gen/{id}/set_metadata/`
+  (`{title}` only — a live test confirmed lyrics/tags/cover/metadata survive).
+  Old titles are persisted in `titleAliases` so filenames downloaded before the
+  rename (and Chrome download history) still map to the clip id; the audio file
+  itself also embeds the UUID, so disk tracking survives either way. Suno's
+  workspace view caches titles in memory — use the panel's **Reload Suno page**
+  button (hard reload) after applying.
 - **Status logging** (panel): `logStatus()` dedupes by title+status and filters
   to the current batch's titles. Two channels report statuses (the `.clip-row`
   poll and the MAIN-world network hook); without this they double-log.
@@ -268,7 +292,7 @@ src/background/service-worker.js  defaults, side-panel behavior, getTab relay, l
 src/panel/                    side panel UI (batch, presets, preview, Tools)
 src/content/selectors.js      ALL Suno selectors + resilient lookup/helpers
 src/content/cover-flow.js     the flow: open cover, fill badges, workspace, create, monitor
-src/content/catalog.js        full workspace list for the catalogue export (project API + picker fallback)
+src/content/catalog.js        Suno APIs: workspace catalogue + library title search/repair
 src/content/content.js        messaging, pick-source, recorder, page-hook relay
 src/content/row-indicators.js per-row unlock + download badges (CSS beside it)
 src/inject/page-hook.js       MAIN-world fetch/XHR observer: clip status + download metadata
@@ -283,6 +307,9 @@ tools/                        Playwright harness (dev only)
 - Two *distinct* clips with an identical title can't be told apart when re-finding
   the row (Suno rows expose only the title, no clip-id attr). Names/titles stay
   unique via `uniqueSourceNames`, but row selection may take the first match.
+- **Title repair renames Suno titles only.** Local files keep their old filenames
+  (matched by the embedded clip UUID, so disk badges stay correct; old titles are
+  kept as aliases for the filename → title shortcut).
 - Optional: preset import/export; per-preset "variants" bookkeeping (always 2).
 
 ## Suggested first actions for a new session

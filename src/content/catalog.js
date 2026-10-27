@@ -24,6 +24,15 @@
   const CONCURRENCY = 4;
   const REQUEST_TIMEOUT_MS = 15000;
 
+  // --- title repair (library search + metadata rename) ---
+  const SEARCH_PATH = "/a/api/search/";
+  const SEARCH_PAGE_SIZE = 20; // the endpoint caps `size` at 20
+  const MAX_SEARCH_PAGES = 100; // safety net (2000 matching clips)
+  const CLIP_PATH = "/a/api/clip/";
+  const RENAME_PATH = (id) => "/a/api/gen/" + encodeURIComponent(id) + "/set_metadata/";
+  const SOURCE_CONCURRENCY = 4;
+  const RENAME_DELAY_MS = 220;
+
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   function S() {
@@ -296,15 +305,251 @@
     };
   }
 
+  // --- title repair ---------------------------------------------------------
+  //
+  // The user's `mangled` marker sometimes leaked into generated titles. Suno's
+  // cover clips keep `metadata.cover_clip_id` pointing at the source upload, so
+  // we can map a bad title back to its source and rebuild a correct one.
+
+  function jsonHeaders() {
+    const headers = { "Content-Type": "application/json", Accept: "application/json" };
+    const token = sessionToken();
+    if (token) headers.Authorization = "Bearer " + token;
+    return headers;
+  }
+
+  async function fetchJson(path, options) {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null;
+    try {
+      const res = await fetch(
+        path,
+        Object.assign(
+          {
+            credentials: "same-origin",
+            headers: jsonHeaders(),
+            signal: controller ? controller.signal : undefined
+          },
+          options || {}
+        )
+      );
+      let body = null;
+      try {
+        body = await res.json();
+      } catch (err) {
+        body = null;
+      }
+      if (!res.ok) {
+        const detail =
+          body && body.detail ? ": " + JSON.stringify(body.detail).slice(0, 300) : "";
+        throw new Error("HTTP " + res.status + detail);
+      }
+      return body;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** One page of Suno's library search (it caps size at 20). */
+  async function fetchSearchPage(term, fromIndex) {
+    const json = await fetchJson(SEARCH_PATH, {
+      method: "POST",
+      body: JSON.stringify({
+        search_queries: [
+          {
+            name: "library_song",
+            search_type: "library_song",
+            term: term,
+            from_index: fromIndex,
+            size: SEARCH_PAGE_SIZE,
+            rank_by: "most_recent"
+          }
+        ]
+      })
+    });
+    const page = json && json.result && json.result.library_song;
+    return {
+      hits: page && Array.isArray(page.result) ? page.result : [],
+      total: Number(page && page.total_hits) || 0
+    };
+  }
+
+  /** Every library clip whose title (or metadata) matches `term`. */
+  async function searchLibrarySongs(term, onProgress) {
+    const q = String(term || "").trim();
+    if (!q) throw new Error("Enter a search term (e.g. mangled).");
+    const byId = new Map();
+    let total = 0;
+    for (let page = 0; page < MAX_SEARCH_PAGES; page++) {
+      const from = page * SEARCH_PAGE_SIZE;
+      const res = await fetchSearchPage(q, from);
+      total = res.total || total;
+      for (const clip of res.hits) {
+        if (clip && clip.id && !byId.has(clip.id)) byId.set(clip.id, clip);
+      }
+      if (onProgress) onProgress({ done: byId.size, total: total || byId.size, page: page + 1 });
+      if (res.hits.length < SEARCH_PAGE_SIZE) break;
+      if (total && from + res.hits.length >= total) break;
+      await sleep(80);
+    }
+    return { clips: [...byId.values()], total: total || byId.size };
+  }
+
+  async function fetchClip(id) {
+    return fetchJson(CLIP_PATH + encodeURIComponent(id), { method: "GET" });
+  }
+
+  /**
+   * Candidate rows for the repair tool: generated cover clips (not uploads) with
+   * a song-name separator, plus the title of the clip they cover.
+   */
+  async function collectTitleRepairs(term, onProgress) {
+    const search = await searchLibrarySongs(term, (p) => {
+      if (onProgress) onProgress({ phase: "search", done: p.done, total: p.total });
+    });
+
+    const candidates = search.clips.filter((clip) => {
+      const meta = clip && clip.metadata && typeof clip.metadata === "object" ? clip.metadata : {};
+      if (meta.type === "upload" || meta.type === "upsample") return false;
+      return String((clip && clip.title) || "").indexOf(" - ") !== -1;
+    });
+
+    // Search results normally carry metadata.cover_clip_id; fetch the clip once
+    // for the rare row where they do not.
+    const metaById = new Map();
+    for (const clip of candidates) metaById.set(clip.id, clip.metadata || {});
+    for (const clip of candidates) {
+      const meta = metaById.get(clip.id) || {};
+      if (meta.cover_clip_id || meta.edited_clip_id) continue;
+      try {
+        const full = await fetchClip(clip.id);
+        metaById.set(clip.id, (full && full.metadata) || {});
+      } catch (err) {
+        /* leave it unresolved; the panel will offer manual editing */
+      }
+    }
+
+    const sourceIds = [
+      ...new Set(
+        candidates
+          .map((c) => metaById.get(c.id))
+          .map((m) => m && (m.cover_clip_id || m.edited_clip_id))
+          .filter(Boolean)
+      )
+    ];
+
+    const sourceTitles = new Map();
+    let done = 0;
+    const queue = sourceIds.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const id = queue.shift();
+        try {
+          const full = await fetchClip(id);
+          sourceTitles.set(id, String((full && full.title) || ""));
+        } catch (err) {
+          sourceTitles.set(id, null);
+        }
+        done++;
+        if (onProgress) onProgress({ phase: "sources", done: done, total: sourceIds.length });
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(SOURCE_CONCURRENCY, queue.length) }, worker)
+    );
+
+    const rows = candidates.map((clip) => {
+      const meta = metaById.get(clip.id) || {};
+      const sourceId = meta.cover_clip_id || meta.edited_clip_id || null;
+      return {
+        id: clip.id,
+        title: String(clip.title || ""),
+        sourceId: sourceId,
+        sourceTitle: sourceId ? sourceTitles.get(sourceId) || "" : ""
+      };
+    });
+
+    return { rows: rows, scanned: search.clips.length, totalHits: search.total };
+  }
+
+  /** Rename one clip. Retries throttling / transient server errors. */
+  async function renameClip(id, title) {
+    const clean = String(title || "").trim();
+    if (!id || !clean) throw new Error("Missing clip id or title.");
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const json = await fetchJson(RENAME_PATH(id), {
+          method: "POST",
+          body: JSON.stringify({ title: clean })
+        });
+        if (json && json.error_type) {
+          throw new Error("Suno rejected the title: " + json.error_type);
+        }
+        return json;
+      } catch (err) {
+        lastError = err;
+        const msg = String((err && err.message) || err);
+        if (!/HTTP (429|5\d\d)/.test(msg) || attempt === 2) break;
+        await sleep(1000 * (attempt + 1));
+      }
+    }
+    throw lastError || new Error("Rename failed.");
+  }
+
+  /** Rename a list of `{ id, title }`, reporting progress as it goes. */
+  async function renameClips(items, onProgress, shouldStop) {
+    const list = Array.isArray(items) ? items : [];
+    const results = [];
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i] || {};
+      if (shouldStop && shouldStop()) {
+        results.push({ id: item.id, title: item.title, ok: false, error: "cancelled" });
+        continue;
+      }
+      try {
+        await renameClip(item.id, item.title);
+        results.push({ id: item.id, title: item.title, ok: true });
+      } catch (err) {
+        results.push({
+          id: item.id,
+          title: item.title,
+          ok: false,
+          error: String((err && err.message) || err)
+        });
+      }
+      if (onProgress) {
+        onProgress({
+          done: i + 1,
+          total: list.length,
+          result: results[results.length - 1]
+        });
+      }
+      if (i < list.length - 1) await sleep(RENAME_DELAY_MS);
+    }
+    return {
+      results: results,
+      renamed: results.filter((r) => r.ok).length,
+      failed: results.filter((r) => !r.ok).length
+    };
+  }
+
   root.SunoGenCatalog = {
     collectWorkspaces: collectWorkspaces,
+    searchLibrarySongs: searchLibrarySongs,
+    collectTitleRepairs: collectTitleRepairs,
+    renameClip: renameClip,
+    renameClips: renameClips,
     internals: {
       collectFromApi: collectFromApi,
       collectFromDom: collectFromDom,
       parseEntry: parseEntry,
       pickerDialog: pickerDialog,
       listContainer: listContainer,
-      sessionToken: sessionToken
+      sessionToken: sessionToken,
+      fetchJson: fetchJson,
+      fetchSearchPage: fetchSearchPage,
+      fetchClip: fetchClip
     }
   };
 })(globalThis);

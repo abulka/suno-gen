@@ -134,8 +134,14 @@ functions in `selectors.js` rather than fragile CSS.
   `buildJobs` uses step **2 per style** (Suno always makes 2 clips per Create, so
   the 2nd is left for manual editing).
 - `deriveSongName(title)` — from a picked clip's aria-label: drop `· <uuid>`,
-  strip a leading `YYYY-MM-DD`/`YY-M` date, take the last ` - ` segment, else
-  strip a leading `take-rating` token. `"2026-07-28 arlie · <uuid>"` → `"arlie"`.
+  split on `" - "`, drop trailing processing markers (`mangled`, `mangled2`, …
+  plus an optional `-a1b2` dedupe suffix), strip a leading `YYYY-MM-DD`/`YY-M`
+  date, take the last ` - ` segment, else strip a leading `take-rating` token.
+  `"2026-07-28 arlie · <uuid>"` → `"arlie"`; `"2026-06-28 fine - mangled"` →
+  `"fine"`; `"seqout mangled2"` → `"seqout"`.
+- `stripProcessingMarker`, `isProcessingMarker`, `repairSongName`,
+  `splitTitle`, `joinTitle` — shared marker/repair helpers used by the panel's
+  bulk title repair tool.
 - `uniqueSourceNames(sources)` — per-source name (`songName` override → derived),
   disambiguating duplicates with a 4-char clip-id suffix. Used by the panel list,
   the preview and `buildJobs` so all three agree.
@@ -146,6 +152,28 @@ functions in `selectors.js` rather than fragile CSS.
 
 `title.js` is a classic script attaching `globalThis.SunoGenTitle`, loaded before
 `cover-flow.js` in both the content script list and `panel.html`.
+
+## Title repair (`catalog.js` + panel Tools)
+
+The repair tool is the only writer of clip titles. It uses the same
+`__session` JWT as the catalogue export:
+
+- `POST /a/api/search/` body
+  `{search_queries:[{name:"library_song", search_type:"library_song", term,
+  from_index, size:20, rank_by:"most_recent"}]}`. `size` caps at 20; page with
+  `from_index` until `total_hits`. Search hits include `metadata.cover_clip_id`.
+- `GET /a/api/clip/{id}` for a clip/source title (source of a cover).
+- `POST /a/api/gen/{id}/set_metadata/` body `{title}`. Verified live: a partial
+  payload changes only the title; lyrics, tags, cover image and display tags are
+  preserved. Retries 429/5xx.
+- `titleAliases` (`{ titleLower: clipId }`) is written before renames; the
+  service worker and the panel folder scan merge it with `clipTitles` (current
+  titles win) so old filenames / Chrome download history still resolve. Audio
+  files embed the UUID, so a disk rescan is authoritative regardless.
+
+The panel groups search rows by old title → new title, lets the user edit or
+uncheck each group, and renames every clip id in the selected groups (Suno
+generates two clips per Create, so most groups contain 2 ids).
 
 ## Cover flow sequence (`cover-flow.js`)
 

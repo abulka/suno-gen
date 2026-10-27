@@ -146,6 +146,22 @@
           <div id="export-status" class="muted tools-hint">
             Exports style presets, all workspaces (read from Suno's project API) and on-disk clip IDs for the Music workflow app.
           </div>
+          <div class="tools-subhead">Title repair</div>
+          <div class="tools-actions">
+            <input id="repair-term" type="text" class="repair-term" value="mangled" title="Processing marker to search for and strip" />
+            <button id="repair-scan" type="button" class="btn btn-sm">Scan titles</button>
+          </div>
+          <div id="repair-status" class="muted tools-hint">
+            Finds generated covers whose song name leaked a processing marker, maps each back to its source clip and proposes a corrected title.
+          </div>
+          <div id="repair-panel" hidden>
+            <div id="repair-list" class="repair-list"></div>
+            <div class="tools-actions">
+              <button id="repair-apply" type="button" class="btn btn-sm btn-primary">Rename selected</button>
+              <button id="repair-reload" type="button" class="btn btn-sm btn-ghost">Reload Suno page</button>
+              <button id="repair-cancel" type="button" class="btn btn-sm btn-ghost">Stop</button>
+            </div>
+          </div>
           <div class="tools-subhead">Download sync</div>
           <div class="tools-toggles">
             <label class="inline"><input id="dl-badge-unlock" type="checkbox" /> unlock/upload badge</label>

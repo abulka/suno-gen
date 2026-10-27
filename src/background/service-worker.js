@@ -57,6 +57,10 @@ async function enablePanelOnActionClick() {
  * the feed is used to match the suggested filename.
  */
 const TITLES_KEY = "clipTitles";
+// Old titles kept after a rename so filenames and Chrome download history that
+// predate the rename still resolve to the same clip id. `{ titleLower: clipId }`.
+const ALIASES_KEY = "titleAliases";
+const MAX_TITLE_ALIASES = 5000;
 const titleToId = new Map();
 
 function stemOf(filename) {
@@ -134,7 +138,13 @@ function notifyDownloaded(id) {
 
 async function loadClipTitles() {
   try {
-    const store = await chrome.storage.local.get(TITLES_KEY);
+    const store = await chrome.storage.local.get([ALIASES_KEY, TITLES_KEY]);
+    // Aliases first: a live title always wins if the same text was reused.
+    const aliases = store[ALIASES_KEY] || {};
+    for (const title of Object.keys(aliases)) {
+      const id = aliases[title];
+      if (title && id) titleToId.set(String(title).trim().toLowerCase(), id);
+    }
     const map = store[TITLES_KEY] || {};
     for (const id of Object.keys(map)) {
       const title = map[id];
@@ -147,13 +157,29 @@ async function loadClipTitles() {
 
 async function rememberClipTitles(items) {
   if (!Array.isArray(items) || !items.length) return;
-  const store = await chrome.storage.local.get(TITLES_KEY);
+  const store = await chrome.storage.local.get([TITLES_KEY, ALIASES_KEY]);
   const map = store[TITLES_KEY] || {};
+  const aliases = store[ALIASES_KEY] || {};
   let changed = false;
+  let aliasesChanged = false;
   for (const item of items) {
     if (!item || !item.id || !item.title) continue;
     const key = String(item.title).trim().toLowerCase();
     if (!key) continue;
+    const previous = map[item.id] ? String(map[item.id]).trim().toLowerCase() : "";
+    if (previous && previous !== key) {
+      // Don't alias a title that another live clip still uses: the current
+      // title map must win for filename matching.
+      const stillUsed = Object.keys(map).some(
+        (otherId) =>
+          String(otherId) !== String(item.id) &&
+          String(map[otherId] || "").trim().toLowerCase() === previous
+      );
+      if (!stillUsed && aliases[previous] !== item.id) {
+        aliases[previous] = item.id;
+        aliasesChanged = true;
+      }
+    }
     titleToId.set(key, item.id);
     if (map[item.id] !== item.title) {
       map[item.id] = item.title;
@@ -161,6 +187,13 @@ async function rememberClipTitles(items) {
     }
   }
   if (changed) await chrome.storage.local.set({ [TITLES_KEY]: map });
+  if (aliasesChanged) {
+    const keys = Object.keys(aliases);
+    if (keys.length > MAX_TITLE_ALIASES) {
+      for (const key of keys.slice(0, keys.length - MAX_TITLE_ALIASES)) delete aliases[key];
+    }
+    await chrome.storage.local.set({ [ALIASES_KEY]: aliases });
+  }
   // Titles just became available: retry the history backfill so downloads the
   // user made before installing (or before the feed loaded) get matched.
   scheduleBackfill();
