@@ -42,13 +42,9 @@
         </div>
 
         <div class="grid">
-          <label>
+          <label class="full">
             Song name
             <input id="song-name" type="text" placeholder="happy song" />
-          </label>
-          <label>
-            Batch date (workspace)
-            <input id="date" type="text" placeholder="26-9" title="Used for workspace names and the collection; generated titles use each seed's own date" />
           </label>
           <label>
             Take
@@ -67,13 +63,17 @@
 
         <div class="full field">
           <div class="field-head">
-            <span>Workspace</span>
-            <label class="inline">
+            <span>Output workspace</span>
+            <label class="inline" title="Auto-name each song's workspace as {date} {song}">
               <input id="auto-workspace" type="checkbox" />
-              auto from date + name
+              auto: {date} {song}
             </label>
           </div>
-          <input id="workspace" type="text" placeholder="26-9 happy song" />
+          <label id="auto-date-field" class="auto-date">
+            Auto-workspace date
+            <input id="date" type="text" placeholder="26-10" title="Only used for auto workspace names; generated titles use each seed's own date" />
+          </label>
+          <input id="workspace" type="text" placeholder="out - 26-10" title="Exact workspace for the whole batch (manual mode)" />
           <div id="dest-info" class="dest-info muted"></div>
         </div>
       </section>

@@ -14,6 +14,7 @@
       take: "01",
       rating: "iiiN",
       workspace: "",
+      manualWorkspace: "",
       autoWorkspace: true,
       globalTake: true
     },
@@ -25,6 +26,7 @@
   let batchRunning = false;
   let batchCallActive = false;
   let feedMonitorActive = false;
+  let lastManualWorkspace = "";
   let activeJobTitles = new Set();
   let lastStatusByTitle = new Map();
   let pickMode = false;
@@ -68,6 +70,9 @@
       state.batch.autoWorkspace = state.settings.autoDeriveWorkspace !== false;
     }
     if (state.batch.globalTake === undefined) state.batch.globalTake = true;
+    lastManualWorkspace = String(
+      state.batch.manualWorkspace || state.batch.workspace || ""
+    ).trim();
   }
 
   async function savePresets() {
@@ -698,6 +703,7 @@
     $("rating").value = state.batch.rating;
     $("auto-workspace").checked = state.batch.autoWorkspace;
     $("take-global").checked = state.batch.globalTake !== false;
+    $("workspace").value = lastManualWorkspace;
     renderSources();
     syncWorkspace();
     updatePickStatus();
@@ -709,6 +715,7 @@
    */
   function readBatchFromDom() {
     const autoWorkspace = $("auto-workspace").checked;
+    const manual = autoWorkspace ? lastManualWorkspace : $("workspace").value || "";
     return {
       // With one source the field is authoritative; with many, names are
       // derived per source (see title.js:uniqueSourceNames).
@@ -717,7 +724,8 @@
       take: $("take").value,
       rating: $("rating").value,
       // Auto workspace is derived per source in buildJobs, so leave it blank.
-      workspace: autoWorkspace ? "" : $("workspace").value,
+      workspace: autoWorkspace ? "" : manual,
+      manualWorkspace: manual,
       autoWorkspace: autoWorkspace,
       globalTake: $("take-global").checked
     };
@@ -726,7 +734,13 @@
   function syncWorkspace() {
     const input = $("workspace");
     const auto = $("auto-workspace").checked;
+    const dateField = $("auto-date-field");
+    if (dateField) dateField.hidden = !auto;
     input.readOnly = auto;
+    input.placeholder = auto ? "(derived from date + song)" : "out - 26-10";
+    input.title = auto
+      ? "Auto-named workspace ({date} {song}); untick auto to edit"
+      : "Exact workspace for the whole batch";
     if (auto) {
       if (state.sources.length > 1) {
         input.value = "(per song)";
@@ -737,8 +751,11 @@
             : $("song-name").value;
         input.value = T.buildWorkspace({ date: $("date").value, songName: songName });
       }
+    } else if (!input.value) {
+      input.value = lastManualWorkspace;
     }
     updateDestInfo();
+    updateRunEnabled();
   }
 
   function updateDestInfo() {
@@ -759,10 +776,18 @@
           : $("song-name").value;
       strong.textContent =
         T.buildWorkspace({ date: $("date").value, songName: songName }) || "(none)";
-      note = "  (auto from date + name)";
+      note = "  (auto: {date} {song})";
     } else {
       strong.textContent = $("workspace").value || "(none)";
-      note = "  (manual, all songs)";
+      note = $("workspace").value
+        ? "  (manual, all songs)"
+        : "  — enter an output workspace or enable auto";
+    }
+    const overrides = state.presets.filter(
+      (p) => p.selected !== false && p.workspaceOverride && p.workspaceOverride.trim()
+    );
+    if (overrides.length) {
+      note += " · " + overrides.length + " preset override(s) win";
     }
     el.appendChild(strong);
     el.appendChild(document.createTextNode(note));
@@ -897,6 +922,7 @@
         preset.selected = cb.checked;
         savePresets();
         renderPreview();
+        updateDestInfo();
         updateRunEnabled();
       });
 
@@ -935,6 +961,7 @@
         savePresets();
         renderPresets();
         renderPreview();
+        updateDestInfo();
         updateRunEnabled();
       });
 
@@ -959,6 +986,11 @@
   function renderPreview() {
     const el = $("preview");
     el.innerHTML = "";
+    if (!$("auto-workspace").checked && !($("workspace").value || "").trim()) {
+      el.className = "preview muted";
+      el.textContent = "Enter an output workspace or enable auto.";
+      return;
+    }
     let jobs = [];
     try {
       jobs = Flow.buildJobs(currentConfig());
@@ -1001,10 +1033,13 @@
   }
 
   function updateRunEnabled() {
+    const autoWs = $("auto-workspace").checked;
+    const manualWs = ($("workspace").value || "").trim();
     const ready =
       state.sources.length > 0 &&
       state.presets.some((p) => p.selected !== false) &&
-      (state.sources.length > 1 || !!($("song-name").value || "").trim());
+      (state.sources.length > 1 || !!($("song-name").value || "").trim()) &&
+      (autoWs || !!manualWs);
     $("run-batch").disabled = !ready || batchCallActive || repairApplying;
     const scan = $("repair-scan");
     if (scan) scan.disabled = repairScanning || repairApplying || batchCallActive;
@@ -1426,6 +1461,7 @@
     closeEditor();
     renderPresets();
     renderPreview();
+    updateDestInfo();
     updateRunEnabled();
   }
 
@@ -1527,6 +1563,9 @@
   function wire() {
     const onBatchInput = () => {
       if (state.sources.length === 1) state.sources[0].songName = $("song-name").value;
+      if (!$("auto-workspace").checked) {
+        lastManualWorkspace = $("workspace").value || "";
+      }
       renderSources();
       syncWorkspace();
       saveBatch();
@@ -1538,7 +1577,17 @@
     $("take").addEventListener("input", onBatchInput);
     $("rating").addEventListener("input", onBatchInput);
     $("workspace").addEventListener("input", onBatchInput);
-    $("auto-workspace").addEventListener("change", onBatchInput);
+    $("auto-workspace").addEventListener("change", (e) => {
+      if (e.target.checked) {
+        // Capture the manual value before the input becomes read-only/derived.
+        const current = ($("workspace").value || "").trim();
+        if (current && current !== "(per song)") lastManualWorkspace = current;
+      } else {
+        // Restore the manual workspace instead of keeping the derived name.
+        $("workspace").value = lastManualWorkspace;
+      }
+      onBatchInput();
+    });
     $("take-global").addEventListener("change", onBatchInput);
 
     $("add-preset").addEventListener("click", () => openEditor(null));
@@ -1843,6 +1892,10 @@
 
         const config = currentConfig();
         config.dryRun = $("dry-run").checked;
+        if (!config.batch.autoWorkspace && !String(config.batch.workspace || "").trim()) {
+          logLine("Enter an output workspace or enable auto.", "err");
+          return;
+        }
         logLine("Starting batch (" + (config.dryRun ? "dry run" : "live") + ")…");
         batchRunning = !config.dryRun;
         const res = await sendToContent("SUNOGEN_RUN_BATCH", { config: config });

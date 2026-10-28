@@ -200,7 +200,8 @@ extension loaded, or the MCP `--extension` flag.
   `clipId`. Each source's Song name is derived (`title.js:deriveSongName`); with
   >1 source the Song name field is disabled and names are per-source
   (`title.js:uniqueSourceNames`, duplicates get a 4-char clip-id suffix).
-- **Seed dates and whole names:** generated titles use the **seed's own date** as `YY-M` (e.g. `2026-06-15 zsil` → `26-6`) and keep the **whole seed name** after stripping the date and trailing markers. No seed date → no date prefix in the title. The panel's date field is the **batch/workspace date** (e.g. `out - 26-10`, auto `26-10 <song>`), not the title date.
+- **Seed dates and whole names:** generated titles use the **seed's own date** as `YY-M` (e.g. `2026-06-15 zsil` → `26-6`) and keep the **whole seed name** after stripping the date and trailing markers. No seed date → no date prefix in the title.
+- **Workspace fields:** **Output workspace** is the manual collection for the whole batch (`out - 26-10`). **Auto-workspace date** only appears when **auto: {date} {song}** is ticked and names per-song workspaces (e.g. `26-10 zsil`). It never affects titles. With auto off, an empty Output workspace disables Generate instead of silently falling back.
 - **Processing/fragment markers are not names:** `mangled`, `mangled2`, `frag1`,
   `frag2`, `fragment1`, … (with a ` - ` or space before them, and an optional old
   `-a1b2` dedupe suffix) are filter/EQ/fragment tags. `deriveSongName` strips

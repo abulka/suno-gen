@@ -54,6 +54,7 @@ label, .field { display: flex; flex-direction: column; gap: 4px; font-size: 11px
 .full { width: 100%; }
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.grid .full { grid-column: 1 / -1; }
 
 input[type="text"], textarea {
   width: 100%;
@@ -150,6 +151,8 @@ input:focus, textarea:focus { outline: 1px solid var(--accent); border-color: va
   margin-top: 4px;
 }
 
+.auto-date { margin: 4px 0 6px; }
+#workspace[readonly] { opacity: .7; }
 .dest-info { font-size: 11px; margin-top: 2px; }
 .dest-info strong { color: var(--accent); }
 

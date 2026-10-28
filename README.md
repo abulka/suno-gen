@@ -22,12 +22,17 @@ submits them all, naming each resulting song with the style code so you can tell
 at a glance which songs were generated with which style:
 
 - **Title template:** `{date} {take}-{rating} {styleCode} - {songName}`
-  - `date` = `YY-M` (e.g. `26-9`); `take` = 2-digit and steps by 2 per style;
-    `rating` defaults to the literal `iiiN` (a searchable placeholder you edit
-    later); `styleCode` = no spaces, ≤ 8 chars.
-  - Example: `26-9 01-iiiN qhvy - happy song`
-- **Workspace:** defaults to `{date} {songName}` (e.g. `26-9 bird song`), or a
-  per-preset override. Missing workspaces are auto-created.
+  - `date` = the **seed's own date** as `YY-M` (e.g. `2026-06-15 zsil` → `26-6`);
+    no date prefix when the seed is undated
+  - `take` = 2-digit and steps by 2 per style; `rating` defaults to the literal
+    `iiiN` (a searchable placeholder you edit later); `styleCode` = no spaces,
+    ≤ 8 chars.
+  - Example: `26-6 01-iiiN qhvy - happy song`
+- **Workspace:** use **Output workspace** for a manual collection
+  (`out - 26-10`), or tick **auto: {date} {song}** and fill **Auto-workspace
+  date** (e.g. `26-10`) for per-song workspaces like `26-10 bird song`. The
+  auto-workspace date never affects titles, and with auto off an empty Output
+  workspace disables Generate. Per-preset workspace overrides still win.
 
 Each style preset holds a style prompt, a short style code, optional lyrics and
 an optional workspace override. A "take" counter steps by 2 per job because Suno
