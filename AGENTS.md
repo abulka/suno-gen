@@ -200,15 +200,16 @@ extension loaded, or the MCP `--extension` flag.
   `clipId`. Each source's Song name is derived (`title.js:deriveSongName`); with
   >1 source the Song name field is disabled and names are per-source
   (`title.js:uniqueSourceNames`, duplicates get a 4-char clip-id suffix).
+- **Seed dates and whole names:** generated titles use the **seed's own date** as `YY-M` (e.g. `2026-06-15 zsil` → `26-6`) and keep the **whole seed name** after stripping the date and trailing markers. No seed date → no date prefix in the title. The panel's date field is the **batch/workspace date** (e.g. `out - 26-10`, auto `26-10 <song>`), not the title date.
 - **Processing/fragment markers are not names:** `mangled`, `mangled2`, `frag1`,
   `frag2`, `fragment1`, … (with a ` - ` or space before them, and an optional old
   `-a1b2` dedupe suffix) are filter/EQ/fragment tags. `deriveSongName` strips
-  them. If a trailing marker is removed, the **whole remaining descriptive name**
-  is kept (`multiple guitars - maton arrives - frag1` → `multiple guitars - maton
-  arrives`); otherwise the last ` - ` segment is the name (`70s nu jam - truck` →
-  `truck`). `2026-06-28 fine - mangled` → `fine`. At panel load, stored sources
-  whose `songName` leaked a marker are recomputed. Do not reintroduce markers
-  into the title or workspace.
+  them and keeps the whole remaining descriptive name
+  (`multiple guitars - maton arrives - frag1` → `multiple guitars - maton
+  arrives`, `album 01 - nujazz 012b` → `album 01 - nujazz 012b`).
+  `2026-06-28 fine - mangled` → `fine`. At panel load, stored sources whose
+  `songName` leaked a marker are recomputed. Do not reintroduce markers into the
+  title or workspace.
 - **Run hardening:** clicking **Generate batch** disarms pick mode (asking the
   page, since the panel's cached state can be stale), ignores repeat clicks while
   a batch call is in flight, and ignores `source-picked` events during the batch.
@@ -234,6 +235,18 @@ extension loaded, or the MCP `--extension` flag.
   itself also embeds the UUID, so disk tracking survives either way. Suno's
   workspace view caches titles in memory — use the panel's **Reload Suno page**
   button (hard reload) after applying.
+- **Fix dates/names from seeds** (same Tools section): scans the **current
+  workspace** (`?wid=` from the active tab) via `GET /a/api/project/{id}`,
+  resolves every generated cover's seed (`metadata.cover_clip_id`), replaces the
+  leading batch date with the seed's date (or removes it if the seed is undated),
+  and restores the whole seed name. Manual annotations are preserved
+  (`amber, some good jammy bits`). Preview before applying. This is the one to
+  run for `out - 26-10` / `out - 26-09`.
+- **Local downloads**: `suno-songs.json` now includes `coverClipId`, `seedTitle`,
+  `seedName`, `seedDate`, `seedDateShort`, `metadataType` and `proposedTitle`.
+  The separate `suno-workflow/scripts/rename-downloads.ts` dry-run/apply tool uses
+  those fields to rename local file groups and per-song folders (e.g.
+  `2026-10 zsil` → `2026-06-15 zsil`) for in-scope workspaces only.
 - **Status logging** (panel): `logStatus()` dedupes by title+status and filters
   to the current batch's titles. Two channels report statuses (the `.clip-row`
   poll and the MAIN-world network hook); without this they double-log.
@@ -317,9 +330,10 @@ tools/                        Playwright harness (dev only)
 - Two *distinct* clips with an identical title can't be told apart when re-finding
   the row (Suno rows expose only the title, no clip-id attr). Names/titles stay
   unique via `uniqueSourceNames`, but row selection may take the first match.
-- **Title repair renames Suno titles only.** Local files keep their old filenames
-  (matched by the embedded clip UUID, so disk badges stay correct; old titles are
-  kept as aliases for the filename → title shortcut).
+- **Title repair renames Suno titles only.** Use the separate
+  `suno-workflow/scripts/rename-downloads.ts` (dry-run/apply) to rename local
+  downloads for the selected workspaces; disk badges still match by the embedded
+  clip UUID, and old titles remain in `titleAliases`.
 - Optional: preset import/export; per-preset "variants" bookkeeping (always 2).
 
 ## Suggested first actions for a new session

@@ -136,13 +136,21 @@ functions in `selectors.js` rather than fragile CSS.
   the 2nd is left for manual editing).
 - `deriveSongName(title)` — from a picked clip's aria-label: drop `· <uuid>`,
   split on `" - "`, drop trailing processing/fragment markers (`mangled`,
-  `mangled2`, `frag1`, `fragment1`, … plus an optional `-a1b2` dedupe suffix).
-  If a marker was removed, keep the **whole remaining descriptive name**
-  (`"multiple guitars - maton arrives - frag1"` → `"multiple guitars - maton
-  arrives"`); otherwise take the last ` - ` segment (`"70s nu jam - truck"` →
-  `"truck"`). Then strip leading `YYYY-MM-DD`/`YY-M` and date/take prefixes.
-  `"2026-06-28 fine - mangled"` → `"fine"`; `"post a30p dedication 01 - frag1
-  mangled"` → `"post a30p dedication 01"`.
+  `mangled2`, `frag1`, `fragment1`, … plus an optional `-a1b2` dedupe suffix),
+  then keep the **whole remaining descriptive name** after stripping a leading
+  `YYYY-MM-DD`/`YY-M` date and old take/rating prefix. Generated cover titles
+  (`26-9 06-iiiN artjam - truZ`) still use the last segment. Examples:
+  `"2026-06-28 fine - mangled"` → `"fine"`;
+  `"album 01 - nujazz 012b"` → `"album 01 - nujazz 012b"`;
+  `"multiple guitars - maton arrives - frag1"` → `"multiple guitars - maton arrives"`.
+- `sourceDateInfo`, `sourceDateYYM`, `sourceDateFull` — parse a seed's leading
+  date (`2026-06-15` → `26-6` / `2026-06-15`; `26-10` → `26-10` / `2026-10`;
+  `2010 Feb` → `10-2` / `2010-02`). `buildJobs` uses `sourceDateYYM(source.title)`
+  for the title date; the workspace/collection date still comes from `batch.date`.
+- `mergeSeedName`, `repairTitleFromSeed` — rebuild a cover title from its seed:
+  replace the leading batch date with the seed's date (or remove it when the
+  seed is undated), restore the whole seed name, preserve take/rating/style and
+  manual annotations. Used by the seed repair and the local rename export.
 - `isProcessingMarker`, `isFragmentMarker`, `stripProcessingMarker`,
   `stripFragmentMarker`, `stripTrailingMarker`, `hasTrailingMarker`,
   `repairSongName`, `splitTitle`, `joinTitle` — shared marker/repair helpers
@@ -180,6 +188,21 @@ The repair tool is the only writer of clip titles. It uses the same
 The panel groups search rows by old title → new title, lets the user edit or
 uncheck each group, and renames every clip id in the selected groups (Suno
 generates two clips per Create, so most groups contain 2 ids).
+
+**Fix dates/names from seeds** is a second mode in the same panel section. It
+reads the current workspace with `GET /a/api/project/{id}?page=N`
+(`project_clips[].clip`), filters generated covers, resolves each seed through
+`metadata.cover_clip_id` / `edited_clip_id` (`GET /a/api/clip/{id}`), and uses
+`title.js:repairTitleFromSeed` to replace the batch date with the seed date (or
+remove it when undated) while keeping the take/rating/style and manual
+annotations. The same preview/apply path is used.
+
+The `suno-songs.json` export enriches each generated cover with `coverClipId`,
+`seedTitle`, `seedName`, `seedDate`, `seedDateShort` and `proposedTitle`, using
+the collected song list as the seed-title map. The separate
+`/Users/andy/Devel/ai/suno-workflow/scripts/rename-downloads.ts` reads that file
+and dry-runs/applies local file and per-song folder renames for the requested
+workspaces.
 
 ## Cover flow sequence (`cover-flow.js`)
 

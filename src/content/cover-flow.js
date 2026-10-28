@@ -531,6 +531,7 @@
             ? batch.workspace
             : T.buildWorkspace({ date: batch.date, songName: songName })
       };
+      const titleDate = T.sourceDateYYM(source.title);
       selected.forEach((preset, presetIndex) => {
         // Suno always makes 2 clips per Create; step the take by 2. Global mode
         // keeps counting across songs, otherwise it resets per song.
@@ -542,8 +543,9 @@
           source: source,
           sourceIndex: sourceIndex,
           songName: songName,
+          titleDate: titleDate,
           title: T.buildTitle({
-            date: batch.date,
+            date: titleDate,
             take: T.offsetTake(batch.take, offset),
             rating: batch.rating,
             styleCode: preset.styleCode,

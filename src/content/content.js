@@ -420,6 +420,21 @@
       return Object.assign({ ok: true }, res);
     },
 
+    SUNOGEN_SCAN_SEED_REPAIRS: async (msg) => {
+      const Catalog = globalThis.SunoGenCatalog;
+      if (!Catalog) throw new Error("Catalog helper not loaded — reload the extension.");
+      const res = await Catalog.collectSeedRepairs(msg && msg.projectId, (p) =>
+        emit({
+          event: "title-repair-progress",
+          phase: p.phase,
+          workspace: p.workspace,
+          done: p.done,
+          total: p.total
+        })
+      );
+      return Object.assign({ ok: true }, res);
+    },
+
     SUNOGEN_CANCEL_TITLE_REPAIRS: () => {
       titleRepairCancelled = true;
       return { ok: true };

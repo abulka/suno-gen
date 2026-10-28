@@ -162,8 +162,15 @@
 
     // Split on the song-name separator only. Dates use plain hyphens, so they
     // survive this step.
+    // A generated cover title has a date + take/rating head
+    // ("26-9 06-iiiN artjam - truZ"). For those, the name is still the last
+    // segment; for seed uploads we keep the whole descriptive name.
+    const generatedHead =
+      /^(?:\d{4}-\d{1,2}(?:-\d{1,2})?|\d{1,2}-\d{1,2})\s+(?:\d{1,2}-[A-Za-z0-9]+|iiiN)\b/i.test(
+        s
+      );
+
     const parts = s.split(" - ").map((p) => p.trim()).filter(Boolean);
-    let droppedMarker = false;
 
     // Peel trailing marker/fragment segments (and markers inside the last
     // segment, e.g. "frag1 mangled").
@@ -171,12 +178,10 @@
       const last = parts[parts.length - 1];
       if (isProcessingMarker(last) || isFragmentMarker(last)) {
         parts.pop();
-        droppedMarker = true;
         continue;
       }
       const stripped = stripTrailingMarker(last);
       if (stripped !== last) {
-        droppedMarker = true;
         if (!stripped || isProcessingMarker(stripped) || isFragmentMarker(stripped)) {
           parts.pop();
         } else {
@@ -189,10 +194,14 @@
 
     if (!parts.length) return "";
 
-    if (!droppedMarker && parts.length > 1) {
-      return parts[parts.length - 1].trim();
+    if (generatedHead && parts.length > 1) {
+      const last = parts[parts.length - 1];
+      return stripTrailingMarker(last) || last;
     }
 
+    // Keep the whole remaining descriptive name. The earlier rule (last " - "
+    // segment only) lost meaningful prefixes such as "album 01" and made the
+    // workflow's seed/cover token matching fail.
     s = parts.join(" - ");
     // Strip a leading source date (with an optional following separator) and
     // an old take/rating prefix.
@@ -203,6 +212,63 @@
     s = s.replace(/^\d{1,2}-[A-Za-z0-9]+\s*/, "");
     s = s.replace(/^\d{1,2}\s+/, "");
     return s.trim();
+  }
+
+  const MONTHS = {
+    jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+    jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12
+  };
+
+  /**
+   * Parse a leading date from a seed title.
+   *   "2026-06-15 zsil"  -> { short: "26-6", full: "2026-06-15" }
+   *   "2026-09 counter"  -> { short: "26-9", full: "2026-09" }
+   *   "26-10 zsil"       -> { short: "26-10", full: "2026-10" }
+   *   "2010 Feb slyl"    -> { short: "10-2", full: "2010-02" }
+   *   "album 01..."      -> { short: "", full: "" }
+   */
+  function sourceDateInfo(rawTitle) {
+    const s = String(rawTitle || "").trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+    if (m) {
+      return {
+        short: String(m[1]).slice(-2) + "-" + Number(m[2]),
+        full: m[1] + "-" + pad2(m[2]) + "-" + pad2(m[3])
+      };
+    }
+    m = s.match(/^(\d{4})-(\d{1,2})\b/);
+    if (m) {
+      return {
+        short: String(m[1]).slice(-2) + "-" + Number(m[2]),
+        full: m[1] + "-" + pad2(m[2])
+      };
+    }
+    m = s.match(/^(\d{2})-(\d{1,2})\b/);
+    if (m) {
+      return {
+        short: m[1] + "-" + Number(m[2]),
+        full: "20" + m[1] + "-" + pad2(m[2])
+      };
+    }
+    m = s.match(/^(\d{4})\s+([A-Za-z]{3,4})\b/);
+    if (m) {
+      const month = MONTHS[m[2].toLowerCase()];
+      if (month) {
+        return {
+          short: String(m[1]).slice(-2) + "-" + month,
+          full: m[1] + "-" + pad2(month)
+        };
+      }
+    }
+    return { short: "", full: "" };
+  }
+
+  function sourceDateYYM(rawTitle) {
+    return sourceDateInfo(rawTitle).short;
+  }
+
+  function sourceDateFull(rawTitle) {
+    return sourceDateInfo(rawTitle).full;
   }
 
   /** Split a full title into its generated head and song-name part. */
@@ -235,6 +301,47 @@
       return cleaned;
     }
     return String(derivedName || "").trim() || cleaned;
+  }
+
+  /** Merge an old cover name with the seed name, preserving manual annotations. */
+  function mergeSeedName(oldName, seedName) {
+    const a = String(oldName || "").trim();
+    const b = String(seedName || "").trim();
+    if (!a) return b;
+    if (!b) return a;
+    const al = a.toLowerCase();
+    const bl = b.toLowerCase();
+    if (al === bl) return a;
+    // The old name is a truncated suffix of the seed name
+    // ("nujazz 012b" vs "album 01 - nujazz 012b").
+    if (bl.endsWith(al) || bl.includes(al)) return b;
+    // The seed name is part of the old name: keep manual annotations
+    // ("amber, some good jammy bits").
+    if (al.includes(bl)) return a;
+    // Otherwise the seed name is the source of truth.
+    return b;
+  }
+
+  /**
+   * Rebuild a generated cover title from its seed:
+   *   old "26-10 iiiN 70sgm - zsil, cool"
+   *   seed "2026-06-15 zsil"
+   *   -> "26-6 iiiN 70sgm - zsil, cool"
+   *
+   * The head's take/rating/style are preserved; only the leading date and the
+   * song name change.
+   */
+  function repairTitleFromSeed(oldTitle, seedTitle) {
+    const parts = splitTitle(oldTitle);
+    const date = sourceDateInfo(seedTitle);
+    const seedName = deriveSongName(seedTitle);
+    const headRest = String(parts.head || "")
+      .replace(/^\d{4}-\d{1,2}(?:-\d{1,2})?\s+/, "")
+      .replace(/^\d{1,2}-\d{1,2}\s+/, "");
+    const newHead = date.short ? date.short + (headRest ? " " + headRest : "") : headRest;
+    const oldName = stripTrailingMarker(parts.songName);
+    const newName = mergeSeedName(oldName, seedName);
+    return joinTitle(newHead, newName);
   }
 
   function buildWorkspace(cfg) {
@@ -313,6 +420,11 @@
     stripTrailingMarker: stripTrailingMarker,
     hasTrailingMarker: hasTrailingMarker,
     deriveSongName: deriveSongName,
+    sourceDateInfo: sourceDateInfo,
+    sourceDateYYM: sourceDateYYM,
+    sourceDateFull: sourceDateFull,
+    mergeSeedName: mergeSeedName,
+    repairTitleFromSeed: repairTitleFromSeed,
     splitTitle: splitTitle,
     joinTitle: joinTitle,
     repairSongName: repairSongName,

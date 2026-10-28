@@ -54,10 +54,19 @@ eq(T.isFragmentMarker("frag1-767f"), true, "dedupe suffix on fragment");
 // --- deriveSongName: existing conventions still work ---
 eq(T.deriveSongName("2026-06-27 real use"), "real use", "plain name");
 eq(T.deriveSongName("2026-06-15 70s zsil"), "70s zsil", "name starting with digits");
-eq(T.deriveSongName("2026-08-28 70s nu jam - truck"), "truck", "last segment");
-eq(T.deriveSongName("2026-08-28 01-iii2 gm art jam - truck (x)"), "truck (x)", "parenthetical");
-eq(T.deriveSongName("26-9 06-iiiN artjam - truZ"), "truZ", "already generated title");
+eq(T.deriveSongName("2026-08-28 70s nu jam - truck"), "70s nu jam - truck", "whole seed name");
+eq(T.deriveSongName("album 01 - nujazz 012b"), "album 01 - nujazz 012b", "album prefix kept");
+eq(T.deriveSongName("2026-08-28 01-iii2 gm art jam - truck (x)"), "truck (x)", "generated title still uses last segment");
+eq(T.deriveSongName("26-9 06-iiiN artjam - truZ"), "truZ", "generated title");
 eq(T.deriveSongName("2026-07-28 arlie · bb7c68e4-1111-2222-3333-444444444444"), "arlie", "uuid suffix");
+
+// --- seed dates ---
+eq(T.sourceDateYYM("2026-06-15 zsil"), "26-6", "full seed date");
+eq(T.sourceDateFull("2026-06-15 zsil"), "2026-06-15", "full date kept");
+eq(T.sourceDateYYM("26-10 zsil"), "26-10", "short date");
+eq(T.sourceDateFull("26-10 zsil"), "2026-10", "short date expanded");
+eq(T.sourceDateYYM("album 01 - nujazz 012b"), "", "no date");
+eq(T.sourceDateYYM("2010 Feb mysterious slyl"), "10-2", "month name date");
 
 // --- sourceName ignores leaked marker overrides ---
 eq(T.sourceName({ title: "2026-06-28 fine - mangled", songName: "mangled" }), "fine", "stale marker override ignored");
@@ -78,6 +87,28 @@ eq(T.repairSongName("frag1", "post a30p dedication 01"), "post a30p dedication 0
 eq(T.repairSongName("seqout mangled2", "seqout"), "seqout", "strip marker, keep name");
 eq(T.repairSongName("dedication 01 - frag1 mangled", "frag1"), "dedication 01", "strip both markers");
 eq(T.repairSongName("fine", "fine"), "fine", "no marker");
+
+// --- full title repair from seed ---
+eq(
+  T.repairTitleFromSeed("26-10 iiiN 70sgm - zsil, cool", "2026-06-15 zsil"),
+  "26-6 iiiN 70sgm - zsil, cool",
+  "seed date replaces batch date"
+);
+eq(
+  T.repairTitleFromSeed("26-10 iiiN 70sgm - frag1-767f", "multiple guitars - maton arrives - frag1"),
+  "iiiN 70sgm - multiple guitars - maton arrives",
+  "undated seed removes date and restores name"
+);
+eq(
+  T.repairTitleFromSeed("26-10 iiiN 70sgm - nujazz 012b", "album 01 - nujazz 012b"),
+  "iiiN 70sgm - album 01 - nujazz 012b",
+  "restores album prefix"
+);
+eq(
+  T.repairTitleFromSeed("26-9 iii3 70sjam - amber, some good jammy bits", "2026-06-28 amber"),
+  "26-6 iii3 70sjam - amber, some good jammy bits",
+  "keeps manual annotation"
+);
 
 // --- full title build ---
 eq(

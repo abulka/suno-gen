@@ -47,8 +47,8 @@
             <input id="song-name" type="text" placeholder="happy song" />
           </label>
           <label>
-            Date (YY-M)
-            <input id="date" type="text" placeholder="26-9" />
+            Batch date (workspace)
+            <input id="date" type="text" placeholder="26-9" title="Used for workspace names and the collection; generated titles use each seed's own date" />
           </label>
           <label>
             Take
@@ -153,6 +153,7 @@
           <div class="tools-actions">
             <input id="repair-term" type="text" class="repair-term" value="mangled, frag" title="Marker(s) to search for and strip; comma-separated" />
             <button id="repair-scan" type="button" class="btn btn-sm">Scan titles</button>
+            <button id="repair-seeds" type="button" class="btn btn-sm">Fix dates/names from seeds</button>
           </div>
           <div id="repair-status" class="muted tools-hint">
             Finds generated covers whose song name leaked a processing/fragment marker, maps each back to its source clip and proposes a corrected title. Separate multiple markers with commas.

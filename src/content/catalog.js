@@ -50,7 +50,7 @@
   const CLIP_PATH = "/a/api/clip/";
   const RENAME_PATH = (id) => "/a/api/gen/" + encodeURIComponent(id) + "/set_metadata/";
   const SOURCE_CONCURRENCY = 4;
-  const RENAME_DELAY_MS = 220;
+  const RENAME_DELAY_MS = 350;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -353,41 +353,56 @@
   }
 
   async function fetchJson(path, options) {
-    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null;
-    try {
-      const res = await fetch(
-        path,
-        Object.assign(
-          {
-            credentials: "same-origin",
-            headers: jsonHeaders(),
-            signal: controller ? controller.signal : undefined
-          },
-          options || {}
-        )
-      );
-      let body = null;
+    const opts = Object.assign({}, options || {});
+    const retries = Math.max(0, Number(opts.retries) || 0);
+    delete opts.retries;
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null;
       try {
-        body = await res.json();
+        const res = await fetch(
+          path,
+          Object.assign(
+            {
+              credentials: "same-origin",
+              headers: jsonHeaders(),
+              signal: controller ? controller.signal : undefined
+            },
+            opts
+          )
+        );
+        let body = null;
+        try {
+          body = await res.json();
+        } catch (err) {
+          body = null;
+        }
+        if (!res.ok) {
+          const detail =
+            body && body.detail ? ": " + JSON.stringify(body.detail).slice(0, 300) : "";
+          throw new Error("HTTP " + res.status + detail);
+        }
+        return body;
       } catch (err) {
-        body = null;
+        lastError = err;
+        const msg = String((err && err.message) || err);
+        const retryable =
+          /HTTP (429|5\d\d)/.test(msg) || /Failed to fetch|NetworkError|Load failed|aborted/i.test(msg);
+        if (attempt >= retries || !retryable) break;
+        await sleep(1500 * Math.pow(2, attempt));
+      } finally {
+        if (timer) clearTimeout(timer);
       }
-      if (!res.ok) {
-        const detail =
-          body && body.detail ? ": " + JSON.stringify(body.detail).slice(0, 300) : "";
-        throw new Error("HTTP " + res.status + detail);
-      }
-      return body;
-    } finally {
-      if (timer) clearTimeout(timer);
     }
+    throw lastError || new Error("Request failed.");
   }
 
   /** One page of Suno's library search (it caps size at 20). */
   async function fetchSearchPage(term, fromIndex) {
     const json = await fetchJson(SEARCH_PATH, {
       method: "POST",
+      retries: 4,
       body: JSON.stringify({
         search_queries: [
           {
@@ -430,7 +445,103 @@
   }
 
   async function fetchClip(id) {
-    return fetchJson(CLIP_PATH + encodeURIComponent(id), { method: "GET" });
+    return fetchJson(CLIP_PATH + encodeURIComponent(id), { method: "GET", retries: 4 });
+  }
+
+  /**
+   * All clips in one workspace ("project"), paged 20 at a time. Used by the
+   * date/name repair, which needs the raw clip objects (cover_clip_id).
+   */
+  async function collectProjectClips(projectId, onProgress) {
+    const id = encodeURIComponent(projectId);
+    const byId = new Map();
+    let total = 0;
+    let name = "";
+    for (let page = 1; page <= 100; page++) {
+      const json = await fetchJson("/a/api/project/" + id + "?page=" + page, {
+        method: "GET",
+        retries: 5
+      });
+      total = Number(json && json.clip_count) || total;
+      name = (json && json.name) || name;
+      const rows = json && Array.isArray(json.project_clips) ? json.project_clips : [];
+      for (const row of rows) {
+        const clip = row && row.clip ? row.clip : row;
+        if (clip && clip.id && !byId.has(clip.id)) byId.set(clip.id, clip);
+      }
+      if (onProgress) {
+        onProgress({
+          phase: "project",
+          done: byId.size,
+          total: total || byId.size,
+          workspace: name
+        });
+      }
+      if (rows.length < 20) break;
+    }
+    return { clips: [...byId.values()], total: total || byId.size, name: name };
+  }
+
+  /**
+   * Generated covers in a workspace plus the title of the seed each covers.
+   * The panel turns these into date/name repair proposals.
+   */
+  async function collectSeedRepairs(projectId, onProgress) {
+    if (!projectId) throw new Error("No workspace id — open the workspace first.");
+    const project = await collectProjectClips(projectId, onProgress);
+    const covers = project.clips.filter((clip) => {
+      const meta = clip && clip.metadata && typeof clip.metadata === "object" ? clip.metadata : {};
+      if (meta.type === "upload" || meta.type === "upsample") return false;
+      return !!(meta.cover_clip_id || meta.edited_clip_id);
+    });
+
+    const sourceIds = [
+      ...new Set(
+        covers
+          .map((clip) => {
+            const meta = clip.metadata || {};
+            return meta.cover_clip_id || meta.edited_clip_id || null;
+          })
+          .filter(Boolean)
+      )
+    ];
+    const sourceTitles = new Map();
+    let done = 0;
+    const queue = sourceIds.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const id = queue.shift();
+        try {
+          const full = await fetchClip(id);
+          sourceTitles.set(id, String((full && full.title) || ""));
+        } catch (err) {
+          sourceTitles.set(id, "");
+        }
+        done++;
+        if (onProgress) onProgress({ phase: "sources", done: done, total: sourceIds.length });
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(SOURCE_CONCURRENCY, queue.length) }, worker)
+    );
+
+    const rows = covers.map((clip) => {
+      const meta = clip.metadata || {};
+      const seedId = meta.cover_clip_id || meta.edited_clip_id || null;
+      return {
+        id: clip.id,
+        oldTitle: String(clip.title || ""),
+        seedId: seedId,
+        seedTitle: seedId ? sourceTitles.get(seedId) || "" : ""
+      };
+    });
+
+    return {
+      rows: rows,
+      workspace: project.name,
+      scanned: project.clips.length,
+      sources: sourceIds.length
+    };
   }
 
   /**
@@ -559,7 +670,7 @@
     const clean = String(title || "").trim();
     if (!id || !clean) throw new Error("Missing clip id or title.");
     let lastError = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       try {
         const json = await fetchJson(RENAME_PATH(id), {
           method: "POST",
@@ -572,8 +683,11 @@
       } catch (err) {
         lastError = err;
         const msg = String((err && err.message) || err);
-        if (!/HTTP (429|5\d\d)/.test(msg) || attempt === 2) break;
-        await sleep(1000 * (attempt + 1));
+        const retryable =
+          /HTTP (429|5\d\d)/.test(msg) || /Failed to fetch|NetworkError|Load failed|aborted/i.test(msg);
+        if (!retryable || attempt === 4) break;
+        // Longer backoff for Suno's rate limiter during big renames.
+        await sleep(2000 * Math.pow(2, attempt));
       }
     }
     throw lastError || new Error("Rename failed.");
@@ -657,6 +771,9 @@
       isLiked: c.is_liked === true || reactionType === "L",
       isDisliked: reactionType === "D",
       likedAt: reactionType === "L" && reaction.updated_at ? String(reaction.updated_at) : null,
+      metadataType: meta.type || null,
+      coverClipId: meta.cover_clip_id ? String(meta.cover_clip_id) : null,
+      editedClipId: meta.edited_clip_id ? String(meta.edited_clip_id) : null,
       project: project && project.id ? { id: String(project.id), name: project.name || "" } : null
     };
   }
@@ -801,6 +918,28 @@
       await sleep(120); // spacing between pages keeps the rate limiter happy
     }
 
+    // Enrich generated covers with their seed's title/date and the proposed
+    // repaired title. The local rename tool and the workflow importer can use
+    // these without another API round-trip.
+    const titleById = new Map([...byId.values()].map((s) => [s.id, s.title]));
+    const Title = root.SunoGenTitle;
+    for (const song of byId.values()) {
+      if (!song.coverClipId) {
+        song.seedTitle = "";
+        song.seedDate = "";
+        song.seedDateShort = "";
+        song.proposedTitle = song.title;
+        continue;
+      }
+      const seedTitle = titleById.get(song.coverClipId) || "";
+      song.seedTitle = seedTitle;
+      song.seedName = Title && seedTitle ? Title.deriveSongName(seedTitle) : "";
+      song.seedDate = Title && seedTitle ? Title.sourceDateFull(seedTitle) : "";
+      song.seedDateShort = Title && seedTitle ? Title.sourceDateYYM(seedTitle) : "";
+      song.proposedTitle =
+        Title && seedTitle ? Title.repairTitleFromSeed(song.title, seedTitle) : song.title;
+    }
+
     const songs = [...byId.values()].sort(compareSongs);
     const counts = { liked: 0, disliked: 0 };
     for (const song of songs) {
@@ -829,6 +968,8 @@
     searchLibrarySongs: searchLibrarySongs,
     collectTitleRepairs: collectTitleRepairs,
     recentClips: recentClips,
+    collectProjectClips: collectProjectClips,
+    collectSeedRepairs: collectSeedRepairs,
     renameClip: renameClip,
     renameClips: renameClips,
     collectSongs: collectSongs,

@@ -785,7 +785,8 @@
 
       const derived = document.createElement("span");
       derived.className = "src-derived";
-      derived.textContent = "→ " + names[i];
+      const titleDate = T.sourceDateYYM(src.title);
+      derived.textContent = "→ " + (titleDate ? titleDate + " " : "") + names[i];
       row.appendChild(derived);
 
       const del = document.createElement("button");
@@ -1007,6 +1008,8 @@
     $("run-batch").disabled = !ready || batchCallActive || repairApplying;
     const scan = $("repair-scan");
     if (scan) scan.disabled = repairScanning || repairApplying || batchCallActive;
+    const seeds = $("repair-seeds");
+    if (seeds) seeds.disabled = repairScanning || repairApplying || batchCallActive;
     const apply = $("repair-apply");
     if (apply) {
       apply.disabled =
@@ -1126,6 +1129,31 @@
     return [...groups.values()].sort((a, b) => a.oldTitle.localeCompare(b.oldTitle));
   }
 
+  /** Date/name repair proposals from a workspace's seed mapping. */
+  function buildSeedRepairGroups(rows) {
+    const groups = new Map();
+    for (const row of rows) {
+      if (!row || !row.oldTitle) continue;
+      const newTitle = T.repairTitleFromSeed(row.oldTitle, row.seedTitle);
+      if (!newTitle || newTitle === row.oldTitle) continue;
+      const key = row.oldTitle + "\u0000" + newTitle;
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          oldTitle: row.oldTitle,
+          newTitle: newTitle,
+          enabled: true,
+          ids: [],
+          sourceTitle: row.seedTitle || "",
+          unresolved: !row.seedTitle
+        };
+        groups.set(key, group);
+      }
+      group.ids.push(row.id);
+    }
+    return [...groups.values()].sort((a, b) => a.oldTitle.localeCompare(b.oldTitle));
+  }
+
   function renderRepairGroups() {
     const list = $("repair-list");
     if (!list) return;
@@ -1229,6 +1257,63 @@
     } catch (err) {
       setRepairStatus("Scan failed: " + String((err && err.message) || err));
       logLine("Title repair scan failed: " + String((err && err.message) || err), "err");
+    } finally {
+      repairScanning = false;
+      renderRepairGroups();
+    }
+  }
+
+  async function scanSeedRepairs() {
+    if (repairScanning || repairApplying || batchCallActive) return;
+    let tab = null;
+    try {
+      tab = await getTab();
+    } catch (err) {
+      /* ignore */
+    }
+    let projectId = "";
+    try {
+      const url = new URL(tab && tab.url ? tab.url : "");
+      projectId = url.searchParams.get("wid") || "";
+    } catch (err) {
+      projectId = "";
+    }
+    if (!projectId) {
+      logLine(
+        "Open the workspace first (out - 26-10 or out - 26-09), then run Fix dates/names from seeds.",
+        "err"
+      );
+      return;
+    }
+
+    repairScanning = true;
+    repairGroups = [];
+    $("repair-panel").hidden = true;
+    renderRepairGroups();
+    setRepairStatus("Reading workspace clips…");
+    updateRunEnabled();
+    try {
+      const res = await sendToContent("SUNOGEN_SCAN_SEED_REPAIRS", { projectId: projectId });
+      if (!res || !res.ok) throw new Error((res && res.error) || "No response from the Suno tab.");
+      repairGroups = buildSeedRepairGroups(res.rows || []);
+      const changed = repairGroups.reduce((n, g) => n + g.ids.length, 0);
+      $("repair-panel").hidden = repairGroups.length === 0;
+      setRepairStatus(
+        repairGroups.length
+          ? "Found " + repairGroups.length + " date/name fix(es) across " + changed +
+            " clip(s) in " + (res.workspace || "the workspace") +
+            ". Review, uncheck any, then rename."
+          : "No date/name changes needed in " + (res.workspace || "this workspace") + "."
+      );
+      logLine(
+        "Seed repair scan: " + (res.workspace || "workspace") + " · " +
+          (res.scanned || 0) + " clip(s), " + (res.sources || 0) + " seed(s) · " +
+          repairGroups.length + " title(s) / " + changed + " clip(s) to fix.",
+        "ok"
+      );
+    } catch (err) {
+      setRepairStatus("Seed repair scan failed: " + String((err && err.message) || err));
+      logLine("Seed repair scan failed: " + String((err && err.message) || err), "err");
     } finally {
       repairScanning = false;
       renderRepairGroups();
@@ -1474,6 +1559,7 @@
     $("clear-sources").addEventListener("click", clearSources);
 
     $("repair-scan").addEventListener("click", () => scanTitleRepairs());
+    $("repair-seeds").addEventListener("click", () => scanSeedRepairs());
     $("repair-apply").addEventListener("click", () => applyTitleRepairs());
     $("repair-cancel").addEventListener("click", () => cancelTitleRepairs());
     $("repair-reload").addEventListener("click", async () => {
@@ -1812,6 +1898,11 @@
           msg.total
             ? "Searching Suno for " + term + "… " + msg.done + "/" + msg.total + " matching clip(s)"
             : "Searching Suno for " + term + "… " + (msg.done || 0)
+        );
+      } else if (msg.phase === "project") {
+        setRepairStatus(
+          "Reading " + (msg.workspace || "workspace") + "… " +
+            (msg.done || 0) + "/" + (msg.total || 0) + " clip(s)"
         );
       } else if (msg.phase === "sources") {
         setRepairStatus(

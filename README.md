@@ -100,6 +100,18 @@ before the rename still match; the UUID embedded in the audio keeps disk trackin
 exact regardless. Suno's workspace view caches clip titles in memory, so use
 **Reload Suno page** (or hard-reload the tab) after applying.
 
+**Fix dates/names from seeds** (same Tools section) scans the **current
+workspace** (`?wid=…` in the active tab), maps every generated cover to its seed
+and proposes the correct seed date (`26-6`) and whole seed name. It preserves
+manual annotations and shows a preview before applying. Run it for `out - 26-10`
+and `out - 26-09`.
+
+The exported `suno-songs.json` includes `coverClipId`, `seedTitle`, `seedName`,
+`seedDate`, `seedDateShort` and `proposedTitle`. The separate
+`suno-workflow/scripts/rename-downloads.ts` uses these to dry-run/apply local
+renames for the same workspaces (`2026-10 zsil` → `2026-06-15 zsil`, files to
+the repaired titles), leaving seeds and unrelated local files alone.
+
 ## Download badges
 
 Suno Generator injects small badges onto each clip's artwork in the Suno clip
@@ -131,6 +143,10 @@ clips by the Suno UUID embedded in the audio metadata. See
 - **Style presets** — each with a style prompt, a short style code, optional
   lyrics, and an optional workspace override.
 - **Naming conventions** — automatic titles and workspace names (see above).
+  Titles use each **seed's own date** (`2026-06-15 zsil` → `26-6`), omit the date
+  when the seed has none, and keep the whole seed name after stripping
+  `mangled`/`fragN` markers. The batch date field is only for workspaces and the
+  collection.
 - **Batch engine** — expands *sources × presets* into jobs, fills the create
   form, selects/creates and verifies the workspace, and submits.
 - **Status monitoring** — feed-first verification expects 2 clips per job,
